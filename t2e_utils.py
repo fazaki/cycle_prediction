@@ -75,7 +75,7 @@ def extract_y(df,n_steps,resolution='hourly'):
         y.append(df.values[n_steps-1,time_idx])
     return np.array(y)
 
-def preprocess(dataset,min_length = 2):
+def preprocess(dataset,min_length = 3):
     tmp = dataset.groupby(["CaseID"]).count()
     to_drop = list(tmp.loc[tmp["ActivityID"] < min_length].index)
     dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
@@ -126,6 +126,18 @@ def smart_split(df, train_perc,val_perc,  suffix, scaling = True):
     X_test,y_test = xy_split(df_test,resolution='daily',n_steps=suffix)
 
     return X_train, X_test, X_val, y_train, y_test, y_val
+
+def balance_labels(X,y):
+    unique = np.unique(y[:,0])
+    count_all = len(unique)
+    for i in unique:
+        count_i = np.squeeze(np.argwhere(y[:,0] == i)).size
+        if count_i > (len(y) // count_all) +1:
+            num_delete = count_i - (len(y) // count_all)
+            idx_delete = np.random.choice(np.squeeze(np.argwhere(y[:,0]==i)), num_delete, replace=False)
+            X = np.delete(X, idx_delete , 0)
+            y = np.delete(y, idx_delete , 0)
+    return X, y
 
 batch_size = 128
 def batch_gen(X, y):
