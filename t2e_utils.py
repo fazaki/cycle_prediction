@@ -18,10 +18,11 @@ from keras import backend as k
 from sklearn.metrics import mean_absolute_error
 from keras.models import Sequential, load_model,Model
 from keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
-from keras import callbacks
 from keras.optimizers import RMSprop,adam
-from keras.callbacks import History, EarlyStopping, ModelCheckpoint
+from keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger
 from sklearn.preprocessing import StandardScaler
+from keras.initializers import glorot_normal
+
 ##########################################################################################################################
 ##########################################################################################################################
 def time_features(case):
@@ -52,7 +53,7 @@ def extract_X(df,n_steps):
     if len(df) < n_steps:
         x.append(
             np.concatenate(
-                (np.full((n_steps - df.shape[0] , len(feature_idx)),fill_value=-100), 
+                (np.full((n_steps - df.shape[0] , len(feature_idx)),fill_value=0), 
                  df.values[0:n_steps,feature_idx]), 
                  axis=0))
     else:
@@ -80,7 +81,7 @@ def preprocess(dataset,min_length = 3):
     to_drop = list(tmp.loc[tmp["ActivityID"] < min_length].index)
     dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
     dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
-#     dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
+    dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
     dataset = dataset.groupby("CaseID").apply(lambda case:time_features(case))
     dataset["D2E"] = dataset["T2E"].apply(lambda x:x.days)
     dataset["H2E"] = dataset["T2E"].apply(lambda x:x.total_seconds()/3600)
@@ -121,23 +122,28 @@ def smart_split(df, train_perc,val_perc,  suffix, scaling = True):
         df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
         df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
    
-    X_train,y_train = xy_split(df_train,resolution='daily',n_steps=suffix)
-    X_val,y_val = xy_split(df_val,resolution='daily',n_steps=suffix)
-    X_test,y_test = xy_split(df_test,resolution='daily',n_steps=suffix)
+    X_train,y_train = xy_split(df_train,resolution='hourly',n_steps=suffix)
+    X_val,y_val = xy_split(df_val,resolution='hourly',n_steps=suffix)
+    X_test,y_test = xy_split(df_test,resolution='hourly',n_steps=suffix)
 
     return X_train, X_test, X_val, y_train, y_test, y_val
 
-def balance_labels(X,y):
-    unique = np.unique(y[:,0])
-    count_all = len(unique)
-    for i in unique:
-        count_i = np.squeeze(np.argwhere(y[:,0] == i)).size
-        if count_i > (len(y) // count_all) +1:
-            num_delete = count_i - (len(y) // count_all)
-            idx_delete = np.random.choice(np.squeeze(np.argwhere(y[:,0]==i)), num_delete, replace=False)
+def balance_labels_nb(X,y):
+    bins = np.arange(0,y[:,0].max()+24, 24)
+    counts = np.histogram(y[:,0], bins=bins)[0]
+    count_all = np.count_nonzero(counts)
+    avg = math.ceil(len(y) / count_all)
+    avg = 30
+    for i in range(len(bins)-1):
+        count_i = counts[i]
+        if count_i > avg:
+            num_delete = count_i - avg
+            print(i, "count:",count_i, "avg:", avg, "to_del:", num_delete, "Act_count:", len(np.squeeze(np.argwhere((y[:,0] >= bins[i]) & (y[:,0] < bins[i+1])))))
+            idx_delete = np.random.choice(np.squeeze(np.argwhere((y[:,0] >= bins[i]) & (y[:,0]< bins[i+1]))), num_delete, replace=False)
             X = np.delete(X, idx_delete , 0)
             y = np.delete(y, idx_delete , 0)
     return X, y
+
 
 batch_size = 128
 def batch_gen(X, y):
@@ -167,33 +173,33 @@ def evaluating(X,y,model):
     test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
     test_results_df['error'] = test_results_df['T'] - test_results_df['predicted_mode']
     test_results_df["abs_error"] = np.absolute(test_results_df["error"])
-    test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["abs_error"] <= 1)) | \
+    test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["abs_error"] <= 24)) | \
                                   ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]-1)) 
 #     print("Accuray =", round(test_results_df["Accurate"].mean()*100,3), "%")
-    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
+    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
     return test_results_df, mae
 
-def train(X_train, y_train, X_val, y_val):
+def train(X_train, y_train, X_val, y_val, datasetname = '', suffix = ''):
     tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
     mean_u = np.nanmean(y_train[:,1].astype('float'))
     init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
     init_alpha = init_alpha/mean_u
     history = History()
+    csv_logger = CSVLogger('hist_suff_'+str(suffix)+'.log', separator=',', append=False)
+    es = EarlyStopping(monitor='loss', mode='min', verbose=False, patience=200, restore_best_weights=True)
+    mc = ModelCheckpoint('best_model_suff'+datasetname+'_'+str(suffix)+'.h5', monitor='loss', mode='min', verbose=False, save_best_only=True, save_weights_only=True)
     n_features = X_train.shape[-1]
+
     main_input = Input(shape=(None, n_features), name='main_input')
-    l1 = GRU(10, activation='tanh', recurrent_dropout=0.25)(main_input)
-    b1 = BatchNormalization()(l1)
-    l2 = Dense(2, name='Dense')(b1)
+    l1 = GRU(128, activation='tanh', kernel_initializer=glorot_normal(seed=42), recurrent_dropout=0.25,return_sequences=True)(main_input)
+    l11 = GRU(64, activation='tanh',kernel_initializer=glorot_normal(seed=42), recurrent_dropout=0.25,return_sequences=False)(l1)
+    b1 = BatchNormalization()(l11)
+    l2 = Dense(2, kernel_initializer=glorot_normal(seed=42), name='Dense')(b1)
     b2 = BatchNormalization()(l2)
     output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(b2)
-    # Use the discrete log-likelihood for Weibull survival data as our loss function
     loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
-
     model = Model(inputs=[main_input], outputs=[output])
-    model.compile(loss=loss, optimizer=adam(lr=0.005))
-
-    es = EarlyStopping(monitor='val_loss', mode='min', verbose=0, patience=200, restore_best_weights=True)
-    mc = ModelCheckpoint('best_model.h5', monitor='val_loss', mode='min', verbose=False, save_best_only=True, save_weights_only=True)
+    model.compile(loss=loss, optimizer=adam(lr=0.01))
 
     mg_train = batch_gen(X_train, y_train)
     mg_val = batch_gen(X_val, y_val)
