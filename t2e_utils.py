@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+np.set_printoptions(threshold=np.inf)
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
@@ -26,66 +27,88 @@ from keras.initializers import glorot_normal
 ##########################################################################################################################
 ##########################################################################################################################
 def time_features(case):
-    endtime = case["CompleteTimestamp"].reset_index(drop=True)[len(case)-1]
+    if case.iloc[0].loc["U"] == 1:
+        endtime = case["CompleteTimestamp"].reset_index(drop=True)[len(case)-1]
+    else:
+        endtime = case["CompleteTimestamp"].reset_index(drop=True)[len(case)-2]
+        last_step = case.drop_duplicates(subset=["CaseID"],keep='last').index
+        case = case.drop(last_step,axis=0).reset_index(drop=True)
+        
     starttime = case["CompleteTimestamp"].reset_index(drop=True)[0]
-    case["fvt1"] = case["CompleteTimestamp"].diff(periods=1)
+    case["fvt1"] = case["CompleteTimestamp"].diff(periods=1).dt.total_seconds()
     case["fvt2"] = case["CompleteTimestamp"].dt.hour
-    case["fvt3"] = case["CompleteTimestamp"].dt.weekday*24 + case["CompleteTimestamp"].dt.hour
-    case["T2E"] =  endtime - case["CompleteTimestamp"]
+    case["fvt3"] = (case["CompleteTimestamp"] - starttime).dt.total_seconds()
+    case["T2E"]  = endtime - case["CompleteTimestamp"]
     return case
 
-def xy_split(processed_dataset, n_steps, resolution = 'hourly'):
-    X = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_X(df, n_steps))
+def xy_split(processed_dataset, resolution, suffix):
+    X = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_X(df, suffix))
     X = np.array(tf.convert_to_tensor(X))
-    y = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_y(df, n_steps, resolution = resolution))
-    y = np.concatenate(y.values)
-    y = y.reshape(y.shape[0],1)
-    y = np.append(y,np.ones_like(y),axis=1)
+    y = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_y(df, suffix, resolution))
+    y = np.array(tf.convert_to_tensor(y))
     return X,y
 
-def extract_X(df,n_steps):
+def extract_X(df,suffix):
     feature_idx = np.concatenate(\
                np.where(df.columns.str.contains('ActivityID_')) + \
 #                np.where(df_helpdesk_preprocessed.columns.str.contains('weekday_')) + \
                np.where(df.columns.str.contains('fvt'))
               )
     x = []
-    if len(df) < n_steps:
+    if len(df) < suffix:
         x.append(
             np.concatenate(
-                (np.full((n_steps - df.shape[0] , len(feature_idx)),fill_value=0), 
-                 df.values[0:n_steps,feature_idx]), 
+                (np.full((suffix - df.shape[0] , len(feature_idx)),fill_value=0), 
+                 df.values[0:suffix,feature_idx]), 
                  axis=0))
     else:
-        x.append(df.values[0:n_steps,feature_idx])
+        x.append(df.values[0:suffix,feature_idx])
 
     x = np.hstack(np.array(x)).flatten()
-    x = x.reshape((n_steps, len(feature_idx)))
+    x = x.reshape((suffix, len(feature_idx)))
 
     return(x)
 
-def extract_y(df,n_steps,resolution='hourly'):
+def extract_y(df,suffix,resolution):
     y = []
-    if resolution == 'hourly':
+    if resolution == 's':
+        time_idx = np.where(df.columns.str.contains("S2E"))[0]
+    elif resolution == 'h':
         time_idx = np.where(df.columns.str.contains("H2E"))[0]
-    else:
+    elif resolution == 'd':
         time_idx = np.where(df.columns.str.contains("D2E"))[0]
-    if len(df) <= n_steps: 
-        y.append(df.values[-1,time_idx])
     else:
-        y.append(df.values[n_steps-1,time_idx])
-    return np.array(y)
+        print("Defualt option chosen ==> daily")
+        time_idx = np.where(df.columns.str.contains("D2E"))[0]
+    
+#     
+    if len(df) <= suffix: 
+         y.append(df.values[-1,time_idx])
+    else:
+         y.append(df.values[suffix-1,time_idx])
+    y.append(df.loc[0,"U"])
+    y = np.hstack(np.array(y)).flatten()
+    y.reshape((1, 2))
+    return y
 
-def preprocess(dataset,min_length = 3):
+def preprocess(dataset,min_length):
+    prc = 0.5
+
     tmp = dataset.groupby(["CaseID"]).count()
     to_drop = list(tmp.loc[tmp["ActivityID"] < min_length].index)
-    dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
     dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
     dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
+    dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
+    
+    unique_cases = dataset.CaseID.unique()
+    np.random.seed(1)
+    censored = np.random.choice(unique_cases, int(len(unique_cases)*prc), replace=False)
+    dataset["U"] = ~dataset['CaseID'].isin(censored)*1
+    
     dataset = dataset.groupby("CaseID").apply(lambda case:time_features(case))
     dataset["D2E"] = dataset["T2E"].apply(lambda x:x.days)
     dataset["H2E"] = dataset["T2E"].apply(lambda x:x.total_seconds()/3600)
-    dataset["fvt1"] = dataset["fvt1"].apply(lambda x:x.total_seconds()/3600)
+    dataset["S2E"] = dataset["T2E"].apply(lambda x:x.total_seconds())
     dataset.fvt1.fillna(0,inplace=True)
 #     dataset["weekday"] = dataset["CompleteTimestamp"].dt.weekday
 #     dummy1 = pd.get_dummies(dataset["weekday"],prefix="weekday",drop_first=True)
@@ -96,7 +119,7 @@ def preprocess(dataset,min_length = 3):
     dataset = dataset.drop(last_step,axis=0).reset_index(drop=True)
     return dataset
 
-def smart_split(df, train_perc,val_perc,  suffix, scaling = True):
+def smart_split(df, train_perc,val_perc,  suffix, resolution, scaling = True):
     min_case_length = suffix+1
     all_suffixes = set(df.CaseID.unique())
     tmp = df.groupby(["CaseID"]).count()
@@ -105,12 +128,10 @@ def smart_split(df, train_perc,val_perc,  suffix, scaling = True):
     
     len_train = int(train_perc * len(above_suffix))
     cases_train = above_suffix[0:len_train] + list(below_suffix)
-    
     len_val = int(len(cases_train)*val_perc)
-    np.random.seed(10)
+    np.random.seed(1)
     np.random.shuffle(cases_train)
     cases_val   = [cases_train.pop() for i in range(len_val)]
-    
     cases_test  = above_suffix[len_train:]
     
     df_train = df.loc[df['CaseID'].isin(cases_train)].reset_index(drop=True)
@@ -122,9 +143,9 @@ def smart_split(df, train_perc,val_perc,  suffix, scaling = True):
         df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
         df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
    
-    X_train,y_train = xy_split(df_train,resolution='hourly',n_steps=suffix)
-    X_val,y_val = xy_split(df_val,resolution='hourly',n_steps=suffix)
-    X_test,y_test = xy_split(df_test,resolution='hourly',n_steps=suffix)
+    X_train,y_train = xy_split(df_train, resolution,  suffix)
+    X_val,y_val     = xy_split(df_val,   resolution,  suffix)
+    X_test,y_test   = xy_split(df_test,  resolution,  suffix)
 
     return X_train, X_test, X_val, y_train, y_test, y_val
 
@@ -161,7 +182,7 @@ def batch_gen_test(X):
             X_batch = X[i*batch_size:(i+1)*batch_size, :,:]
             yield X_batch
             
-def evaluating(X,y,model):    
+def evaluating(X,y,model, resolution):    
     # Make some predictions and put them alongside the real TTE and event indicator values
     mg_test = batch_gen_test(X)
     nb_samples = len(X)
@@ -176,7 +197,12 @@ def evaluating(X,y,model):
     test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["abs_error"] <= 24)) | \
                                   ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]-1)) 
 #     print("Accuray =", round(test_results_df["Accurate"].mean()*100,3), "%")
-    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
+    if resolution == 's':
+        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
+    elif resolution == 'h':
+        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
+    elif resolution == 'd':
+        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
     return test_results_df, mae
 
 def train(X_train, y_train, X_val, y_val, datasetname = '', suffix = ''):
