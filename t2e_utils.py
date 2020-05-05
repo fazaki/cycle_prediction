@@ -20,26 +20,106 @@ from sklearn.metrics import mean_absolute_error
 from keras.models import Sequential, load_model,Model
 from keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
 from keras.optimizers import RMSprop,adam
-from keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger
+from keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
 from sklearn.preprocessing import StandardScaler
 from keras.initializers import glorot_normal
 
 ##########################################################################################################################
 ##########################################################################################################################
 def time_features(case):
+    first_index = case.index[0]
+    last_index   = case.index[-1]
+    
     if case.iloc[0].loc["U"] == 1:
-        endtime = case["CompleteTimestamp"].reset_index(drop=True)[len(case)-1]
+        endtime = case["CompleteTimestamp"][last_index]
     else:
-        endtime = case["CompleteTimestamp"].reset_index(drop=True)[len(case)-2]
-        last_step = case.drop_duplicates(subset=["CaseID"],keep='last').index
-        case = case.drop(last_step,axis=0).reset_index(drop=True)
-        
-    starttime = case["CompleteTimestamp"].reset_index(drop=True)[0]
+        case.drop(last_index,axis=0,inplace=True)
+        last_index   = case.index[-1]
+        endtime = case["CompleteTimestamp"][last_index]
+    
+    starttime = case["CompleteTimestamp"][first_index]
     case["fvt1"] = case["CompleteTimestamp"].diff(periods=1).dt.total_seconds()
     case["fvt2"] = case["CompleteTimestamp"].dt.hour
     case["fvt3"] = (case["CompleteTimestamp"] - starttime).dt.total_seconds()
     case["T2E"]  = endtime - case["CompleteTimestamp"]
+    case["D2E"] = case["T2E"].dt.days
+    case["S2E"] = case["T2E"].dt.total_seconds()
+    case["H2E"] = case["S2E"]/3600
+    
     return case
+
+def preprocess(dataset, min_length, censored, cen_prc):
+    
+    dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
+
+    tmp = dataset.groupby(["CaseID"]).count()
+    to_drop = list(tmp.loc[tmp["ActivityID"] <= min_length].index)
+    dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
+        
+    ## Generate censored data:
+    if censored == True:
+        to_censor_from = list(dataset.groupby(["CaseID"]).count().loc[tmp["ActivityID"] > min_length+1].index)
+        np.random.seed(1)
+        censored = np.random.choice(to_censor_from, int(len(to_censor_from)*cen_prc), replace=False)
+        dataset["U"] = ~dataset['CaseID'].isin(censored)*1
+    
+    else:
+        dataset["U"] = 1
+
+    dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
+    dataset = dataset.groupby("CaseID").apply(lambda case:time_features(case))
+    dataset.fvt1.fillna(0,inplace=True)
+#     dataset["weekday"] = dataset["CompleteTimestamp"].dt.weekday
+#     dummy1 = pd.get_dummies(dataset["weekday"],prefix="weekday",drop_first=True)
+    dummy2 = pd.get_dummies(dataset["ActivityID"],prefix="ActivityID",drop_first=True)
+#     dataset = pd.concat([dataset,dummy1,dummy2],axis=1)
+    dataset = pd.concat([dataset,dummy2],axis=1)
+    last_step = dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
+    dataset = dataset.drop(last_step,axis=0).reset_index(drop=True)
+    return dataset
+
+def smart_split(df, train_perc, val_perc,  suffix, resolution, scaling = True):
+    all_cases = set(df.CaseID.unique())
+    censored  = set(df.loc[df["U"] == 0]["CaseID"])
+    observed  = set(df.loc[df["U"] == 1]["CaseID"])
+    
+    tmp = df.groupby(["CaseID"]).count()
+    below_suffix = set(tmp.loc[tmp["ActivityID"] <  suffix].index)    
+    above_suffix = set(tmp.loc[tmp["ActivityID"] >= suffix].index)
+    print("Total above suffix:", len(above_suffix))
+    above_suffix = list(above_suffix.intersection(observed))
+    
+    len_train = int(train_perc * len(above_suffix))
+    len_val = int(len_train*val_perc)
+    cases_train = above_suffix[0:len_train]
+    cases_val   = [cases_train.pop() for i in range(len_val)]
+    cases_test  = above_suffix[len_train:]
+    
+    print("Total Observed:", len(observed))
+    print("Total above suffix (observed):", len(above_suffix))
+
+    print("Training data Observed:", len(cases_train))
+    print("Training data Censored:", len(censored))
+    cases_train = cases_train + list(censored)
+    print("Training data combined:", len(cases_train))
+
+#     print("Validation data:", len(cases_val ))
+#     print("Testing data   :", len(cases_test))
+    df_train = df.loc[df['CaseID'].isin(cases_train)].reset_index(drop=True)
+    df_val   = df.loc[df['CaseID'].isin(cases_val)  ].reset_index(drop=True)
+    df_test  = df.loc[df['CaseID'].isin(cases_test) ].reset_index(drop=True)
+    if scaling:
+        sc = StandardScaler()
+        df_train.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(df_train[["fvt1", "fvt2", "fvt3"]])
+        df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
+        df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
+   
+    X_train,y_train = xy_split(df_train, resolution,  suffix)
+    X_val,y_val     = xy_split(df_val,   resolution,  suffix)
+    X_test,y_test   = xy_split(df_test,  resolution,  suffix)
+
+    return X_train, X_test, X_val, y_train, y_test, y_val
+
 
 def xy_split(processed_dataset, resolution, suffix):
     X = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_X(df, suffix))
@@ -91,63 +171,8 @@ def extract_y(df,suffix,resolution):
     y.reshape((1, 2))
     return y
 
-def preprocess(dataset,min_length):
-    prc = 0.5
 
-    tmp = dataset.groupby(["CaseID"]).count()
-    to_drop = list(tmp.loc[tmp["ActivityID"] < min_length].index)
-    dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
-    dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
-    dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
-    
-    unique_cases = dataset.CaseID.unique()
-    np.random.seed(1)
-    censored = np.random.choice(unique_cases, int(len(unique_cases)*prc), replace=False)
-    dataset["U"] = ~dataset['CaseID'].isin(censored)*1
-    
-    dataset = dataset.groupby("CaseID").apply(lambda case:time_features(case))
-    dataset["D2E"] = dataset["T2E"].apply(lambda x:x.days)
-    dataset["H2E"] = dataset["T2E"].apply(lambda x:x.total_seconds()/3600)
-    dataset["S2E"] = dataset["T2E"].apply(lambda x:x.total_seconds())
-    dataset.fvt1.fillna(0,inplace=True)
-#     dataset["weekday"] = dataset["CompleteTimestamp"].dt.weekday
-#     dummy1 = pd.get_dummies(dataset["weekday"],prefix="weekday",drop_first=True)
-    dummy2 = pd.get_dummies(dataset["ActivityID"],prefix="ActivityID",drop_first=True)
-#     dataset = pd.concat([dataset,dummy1,dummy2],axis=1)
-    dataset = pd.concat([dataset,dummy2],axis=1)
-    last_step = dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
-    dataset = dataset.drop(last_step,axis=0).reset_index(drop=True)
-    return dataset
 
-def smart_split(df, train_perc,val_perc,  suffix, resolution, scaling = True):
-    min_case_length = suffix+1
-    all_suffixes = set(df.CaseID.unique())
-    tmp = df.groupby(["CaseID"]).count()
-    below_suffix = set(tmp.loc[tmp["ActivityID"] < min_case_length].index)
-    above_suffix = list(all_suffixes.difference(below_suffix))
-    
-    len_train = int(train_perc * len(above_suffix))
-    cases_train = above_suffix[0:len_train] + list(below_suffix)
-    len_val = int(len(cases_train)*val_perc)
-    np.random.seed(1)
-    np.random.shuffle(cases_train)
-    cases_val   = [cases_train.pop() for i in range(len_val)]
-    cases_test  = above_suffix[len_train:]
-    
-    df_train = df.loc[df['CaseID'].isin(cases_train)].reset_index(drop=True)
-    df_val = df.loc[df['CaseID'].isin(cases_val)].reset_index(drop=True)
-    df_test  = df.loc[df['CaseID'].isin(cases_test)].reset_index(drop=True)
-    if scaling:
-        sc = StandardScaler()
-        df_train.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(df_train[["fvt1", "fvt2", "fvt3"]])
-        df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
-        df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
-   
-    X_train,y_train = xy_split(df_train, resolution,  suffix)
-    X_val,y_val     = xy_split(df_val,   resolution,  suffix)
-    X_test,y_test   = xy_split(df_test,  resolution,  suffix)
-
-    return X_train, X_test, X_val, y_train, y_test, y_val
 
 def balance_labels_nb(X,y):
     bins = np.arange(0,y[:,0].max()+24, 24)
@@ -186,41 +211,50 @@ def evaluating(X,y,model, resolution):
     # Make some predictions and put them alongside the real TTE and event indicator values
     mg_test = batch_gen_test(X)
     nb_samples = len(X)
-    test_predict = model.predict_generator(mg_test, steps= ceil(len(X) / batch_size))
-    
-#     test_predict = model.predict(X)
-    test_result = np.concatenate((y, test_predict), axis=1)
+    y_pred = model.predict_generator(mg_test, steps= ceil(len(X) / batch_size))
+#     y_pred = model.predict(X)
+
+    test_result = np.concatenate((y, y_pred), axis=1)
     test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
     test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
-    test_results_df['error'] = test_results_df['T'] - test_results_df['predicted_mode']
-    test_results_df["abs_error"] = np.absolute(test_results_df["error"])
-    test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["abs_error"] <= 24)) | \
-                                  ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]-1)) 
-#     print("Accuray =", round(test_results_df["Accurate"].mean()*100,3), "%")
+    
     if resolution == 's':
+        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
+        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
         mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
     elif resolution == 'h':
+        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
+        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
         mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
     elif resolution == 'd':
+        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
+        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
         mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
-    return test_results_df, mae
+    test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
+                                  ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
+    accuracy = round(test_results_df["Accurate"].mean()*100,3)
 
-def train(X_train, y_train, X_val, y_val, datasetname = '', suffix = ''):
+    return test_results_df, mae, accuracy
+
+def train(X_train, y_train, X_val, y_val, suffix, path):
     tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
     mean_u = np.nanmean(y_train[:,1].astype('float'))
     init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
     init_alpha = init_alpha/mean_u
     history = History()
-    csv_logger = CSVLogger('hist_suff_'+str(suffix)+'.log', separator=',', append=False)
-    es = EarlyStopping(monitor='loss', mode='min', verbose=False, patience=200, restore_best_weights=True)
-    mc = ModelCheckpoint('best_model_suff'+datasetname+'_'+str(suffix)+'.h5', monitor='loss', mode='min', verbose=False, save_best_only=True, save_weights_only=True)
+    cri = 'val_loss'
+    csv_logger = CSVLogger(path +'training_hist_'+str(suffix)+'.log', separator=',', append=False)
+    es = EarlyStopping(monitor=cri, mode='min', verbose=False, patience=100, restore_best_weights=True)
+    mc = ModelCheckpoint(path +'best_model_'+str(suffix)+'.h5', monitor=cri, mode='min', verbose=False, save_best_only=True, save_weights_only=True)
+    lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', epsilon=0.0001, cooldown=0, min_lr=0)
     n_features = X_train.shape[-1]
 
     main_input = Input(shape=(None, n_features), name='main_input')
-    l1 = GRU(128, activation='tanh', kernel_initializer=glorot_normal(seed=42), recurrent_dropout=0.25,return_sequences=True)(main_input)
-    l11 = GRU(64, activation='tanh',kernel_initializer=glorot_normal(seed=42), recurrent_dropout=0.25,return_sequences=False)(l1)
+    l1 = GRU(265, activation='tanh', kernel_initializer=glorot_normal(), recurrent_dropout=0.2,return_sequences=True)(main_input)
+    b0 = BatchNormalization()(l1)
+    l11 = GRU(128, activation='tanh',kernel_initializer=glorot_normal(), recurrent_dropout=0.2,return_sequences=False)(b0)
     b1 = BatchNormalization()(l11)
-    l2 = Dense(2, kernel_initializer=glorot_normal(seed=42), name='Dense')(b1)
+    l2 = Dense(2, kernel_initializer=glorot_normal(), name='Dense')(b1)
     b2 = BatchNormalization()(l2)
     output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(b2)
     loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
@@ -235,7 +269,7 @@ def train(X_train, y_train, X_val, y_val, datasetname = '', suffix = ''):
                     validation_data=(mg_val),
                     validation_steps= ceil(len(X_val) / batch_size),
                     verbose=False,
-                    callbacks=[history,es,mc]
+                    callbacks=[lr_reducer,history,es,mc,csv_logger]
                    )
     return model
 
@@ -326,10 +360,10 @@ def weibull_mode(alpha, beta):
 ##########################################################################################################################
 def plot_predictions_insights(results_df):
 
-    plt.figure(figsize=(12,12))
+    plt.figure(figsize=(12,8))
     t=np.arange(0,300)
     
-    plt.subplot(3,2,1)
+    plt.subplot(2,2,1)
     observed = results_df.loc[results_df['U'] == 1]
     sns.scatterplot(observed['T'], observed["predicted_mode"],hue=observed["Accurate"])
     plt.xlabel("Actual failure time",fontsize=12)
@@ -337,7 +371,7 @@ def plot_predictions_insights(results_df):
     plt.title('Actual Vs. Predicted (Observed)',fontsize=18)
     plt.legend(loc = 'upper left')
     
-    plt.subplot(3,2,2)
+    plt.subplot(2,2,2)
     censored = results_df.loc[results_df['U'] == 0]
     sns.scatterplot(censored['T'], censored["predicted_mode"],hue=censored["Accurate"])
     plt.xlabel("Time of observation",fontsize=12)
@@ -345,17 +379,17 @@ def plot_predictions_insights(results_df):
     plt.title('Actual Vs. Predicted (Censored)',fontsize=18)
     plt.legend(loc = 'upper left')
         
-    plt.subplot(3,2,(3,4))
-    sns.distplot(results_df['error'], bins=100, kde=True,hist=True, norm_hist=False, label="Error Rate")
+    plt.subplot(2,2,(3,4))
+    sns.distplot(results_df['error (days)'], bins=100, kde=True,hist=True, norm_hist=False, label="Error Rate")
     plt.title('Error distribution',fontsize=18)
     plt.legend(loc = 'upper left')
     plt.xlabel("Error Shift",fontsize=12)
 
-    plt.subplot(3,2,(5,6))
-    x = results_df.groupby(["T","U"]).agg({"Accurate":"mean"}).reset_index()
-    x["Error_Rate"] = 1-x["Accurate"]
-    sns.barplot(x= x["T"].astype("int"), y=x["Error_Rate"], hue=x["U"])
-    plt.title('Error rate per time step')
+#     plt.subplot(3,2,(5,6))
+#     x = results_df.groupby(["T","U"]).agg({"Accurate":"mean"}).reset_index()
+#     x["Error_Rate"] = 1-x["Accurate"]
+#     sns.barplot(x= x["T"].astype("int"), y=x["Error_Rate"], hue=x["U"])
+#     plt.title('Error rate per time step')
     
     plt.tight_layout()
     plt.show()
