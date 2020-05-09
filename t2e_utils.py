@@ -9,20 +9,21 @@ import matplotlib.ticker as ticker
 import seaborn as sns
 import math
 from math import ceil
+from six.moves import xrange
 import tensorflow as tf
+from tensorflow.keras.models import load_model,Model
+from tensorflow.keras.initializers import glorot_uniform
+from tensorflow.keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
+from tensorflow.keras import backend as K
+from tensorflow.keras import callbacks
+from tensorflow.keras.initializers import glorot_uniform
+from tensorflow.keras.optimizers import RMSprop,Adam,Nadam
+from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
 import wtte.weibull as weibull
 import wtte.wtte as wtte
 from wtte.wtte import WeightWatcher
-from sklearn.preprocessing import normalize
-from six.moves import xrange
-from keras import backend as k
-from sklearn.metrics import mean_absolute_error
-from keras.models import Sequential, load_model,Model
-from keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
-from keras.optimizers import RMSprop,adam
-from keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
 from sklearn.preprocessing import StandardScaler
-from keras.initializers import glorot_normal
+from sklearn.metrics import mean_absolute_error
 
 ##########################################################################################################################
 ##########################################################################################################################
@@ -59,7 +60,7 @@ def preprocess(dataset, min_length, censored, cen_prc):
     ## Generate censored data:
     if censored == True:
         to_censor_from = list(dataset.groupby(["CaseID"]).count().loc[tmp["ActivityID"] > min_length+1].index)
-        np.random.seed(1)
+        np.random.seed(0)
         censored = np.random.choice(to_censor_from, int(len(to_censor_from)*cen_prc), replace=False)
         dataset["U"] = ~dataset['CaseID'].isin(censored)*1
     
@@ -86,7 +87,7 @@ def smart_split(df, train_perc, val_perc,  suffix, resolution, scaling = True):
     tmp = df.groupby(["CaseID"]).count()
     below_suffix = set(tmp.loc[tmp["ActivityID"] <  suffix].index)    
     above_suffix = set(tmp.loc[tmp["ActivityID"] >= suffix].index)
-    print("Total above suffix:", len(above_suffix))
+    print("\n\t\t\tTotal above suffix:", len(above_suffix))
     above_suffix = list(above_suffix.intersection(observed))
     
     len_train = int(train_perc * len(above_suffix))
@@ -95,13 +96,12 @@ def smart_split(df, train_perc, val_perc,  suffix, resolution, scaling = True):
     cases_val   = [cases_train.pop() for i in range(len_val)]
     cases_test  = above_suffix[len_train:]
     
-    print("Total Observed:", len(observed))
-    print("Total above suffix (observed):", len(above_suffix))
-
-    print("Training data Observed:", len(cases_train))
-    print("Training data Censored:", len(censored))
+    print("\t\t\tTotal Observed:", len(observed))
+    print("\t\t\tTotal above suffix (observed):", len(above_suffix))
+    print("\t\t\tTraining data Observed:", len(cases_train))
+    print("\t\t\tTraining data Censored:", len(censored))
     cases_train = cases_train + list(censored)
-    print("Training data combined:", len(cases_train))
+    print("\t\t\tTraining data combined:", len(cases_train))
 
 #     print("Validation data:", len(cases_val ))
 #     print("Testing data   :", len(cases_test))
@@ -171,9 +171,6 @@ def extract_y(df,suffix,resolution):
     y.reshape((1, 2))
     return y
 
-
-
-
 def balance_labels_nb(X,y):
     bins = np.arange(0,y[:,0].max()+24, 24)
     counts = np.histogram(y[:,0], bins=bins)[0]
@@ -237,6 +234,10 @@ def evaluating(X,y,model, resolution):
     return test_results_df, mae, accuracy
 
 def train(X_train, y_train, X_val, y_val, suffix, path):
+    np.random.seed(0)
+    tf.random.set_seed(0)
+    my_init = glorot_uniform()
+    
     tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
     mean_u = np.nanmean(y_train[:,1].astype('float'))
     init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
@@ -250,16 +251,16 @@ def train(X_train, y_train, X_val, y_val, suffix, path):
     n_features = X_train.shape[-1]
 
     main_input = Input(shape=(None, n_features), name='main_input')
-    l1 = GRU(265, activation='tanh', kernel_initializer=glorot_normal(), recurrent_dropout=0.2,return_sequences=True)(main_input)
+    l1 = GRU(64, activation='tanh', recurrent_dropout=0.2,return_sequences=True, kernel_initializer=my_init)(main_input)
     b0 = BatchNormalization()(l1)
-    l11 = GRU(128, activation='tanh',kernel_initializer=glorot_normal(), recurrent_dropout=0.2,return_sequences=False)(b0)
+    l11= GRU(16, activation='tanh',recurrent_dropout=0.2,return_sequences=False, kernel_initializer=my_init)(b0)
     b1 = BatchNormalization()(l11)
-    l2 = Dense(2, kernel_initializer=glorot_normal(), name='Dense')(b1)
+    l2 = Dense(2, name='Dense', kernel_initializer=my_init)(b1)
     b2 = BatchNormalization()(l2)
     output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(b2)
     loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
     model = Model(inputs=[main_input], outputs=[output])
-    model.compile(loss=loss, optimizer=adam(lr=0.01))
+    model.compile(loss=loss, optimizer=Adam(lr=0.002))
 
     mg_train = batch_gen(X_train, y_train)
     mg_val = batch_gen(X_val, y_val)
