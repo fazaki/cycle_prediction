@@ -27,149 +27,160 @@ from sklearn.metrics import mean_absolute_error
 
 ##########################################################################################################################
 ##########################################################################################################################
-def time_features(case):
-    first_index = case.index[0]
-    last_index   = case.index[-1]
-    
-    if case.iloc[0].loc["U"] == 1:
-        endtime = case["CompleteTimestamp"][last_index]
-    else:
-        case.drop(last_index,axis=0,inplace=True)
-        last_index   = case.index[-1]
-        endtime = case["CompleteTimestamp"][last_index]
-    
-    starttime = case["CompleteTimestamp"][first_index]
-    case["fvt1"] = case["CompleteTimestamp"].diff(periods=1).dt.total_seconds()
-    case["fvt2"] = case["CompleteTimestamp"].dt.hour
-    case["fvt3"] = (case["CompleteTimestamp"] - starttime).dt.total_seconds()
-    case["T2E"]  = endtime - case["CompleteTimestamp"]
-    case["D2E"] = case["T2E"].dt.days
-    case["S2E"] = case["T2E"].dt.total_seconds()
-    case["H2E"] = case["S2E"]/3600
-    
-    return case
 
-def preprocess(dataset, min_length, censored, cen_prc):
-    
-    dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
 
-    tmp = dataset.groupby(["CaseID"]).count()
-    to_drop = list(tmp.loc[tmp["ActivityID"] <= min_length].index)
-    dataset = dataset.loc[~dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
+class t2e:
+
+    def __init__(self, dataset, suffix, censored, cen_prc):
+        self.dataset = dataset
+        self.suffix = suffix
+        self.censored = censored
+        self.cen_prc = cen_prc
+        self.censored_cases = []
         
-    ## Generate censored data:
-    if censored == True:
-        to_censor_from = list(dataset.groupby(["CaseID"]).count().loc[tmp["ActivityID"] > min_length+1].index)
-        np.random.seed(0)
-        censored = np.random.choice(to_censor_from, int(len(to_censor_from)*cen_prc), replace=False)
-        dataset["U"] = ~dataset['CaseID'].isin(censored)*1
+    def preprocess(self):
+        
+        # Retrieve all sequences with their records count
+        self.dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
+        case_counts = self.dataset.groupby(["CaseID"]).count()
+        
+        # Only keep sequences that has at least suffix + 1 records
+        to_drop = list(case_counts.loc[case_counts["ActivityID"] <= self.suffix].index)
+        self.dataset = self.dataset.loc[~self.dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
+
+        ## Generate censored data:
+        to_censor_from = list(self.dataset.groupby(["CaseID"]).count().loc[case_counts["ActivityID"] > self.suffix+1].index)
+        self.censored_cases = np.random.choice(to_censor_from, int(len(to_censor_from)*self.cen_prc), replace=False)
+        
+        ## Create censored label U[1,0]:
+        if self.censored == True:
+            np.random.seed(0)
+            self.dataset["U"] = ~self.dataset['CaseID'].isin(self.censored_cases)*1
+
+        else:
+            self.dataset["U"] = 1
+
+        self.dataset.CompleteTimestamp = pd.to_datetime(self.dataset.CompleteTimestamp)
+        self.dataset = self.dataset.groupby("CaseID").apply(lambda case:self.__time_features(case))
+        self.dataset.fvt1.fillna(0,inplace=True)
+    #     dataset["weekday"] = dataset["CompleteTimestamp"].dt.weekday
+    #     dummy1 = pd.get_dummies(dataset["weekday"],prefix="weekday",drop_first=True)
+        dummy2 = pd.get_dummies(self.dataset["ActivityID"],prefix="ActivityID",drop_first=True)
+    #     dataset = pd.concat([dataset,dummy1,dummy2],axis=1)
+        self.dataset = pd.concat([self.dataset,dummy2],axis=1)
+        last_step = self.dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
+        self.dataset = self.dataset.drop(last_step,axis=0).reset_index(drop=True)
+        return self.dataset
+
+    def smart_split(self, train_prc, val_prc, resolution, scaling):
+        all_cases = set(self.dataset.CaseID.unique())
+        censored  = set(self.censored_cases)
+        observed  = list(all_cases.difference(censored))
+#         observed  = set(self.dataset.loc[self.dataset["U"] == 1]["CaseID"])
+#         tmp = self.dataset.groupby(["CaseID"]).count()
+#         below_suffix = set(tmp.loc[tmp["ActivityID"] <  self.suffix].index)    
+#         above_suffix = set(tmp.loc[tmp["ActivityID"] >= self.suffix].index)
+#         print("\n\t\t\tTotal above suffix:", len(above_suffix))
+#         above_suffix = list(above_suffix.intersection(observed))
+
+        len_train = int(train_prc * len(observed))
+        len_val = int(len_train*val_prc)
+        cases_train = observed[0:len_train]
+        cases_val   = [cases_train.pop() for i in range(len_val)]
+        cases_test  = observed[len_train:]
+
+        print("\t\t\tTotal Observed:", len(observed))
+        print("\t\t\tTraining data Observed:", len(cases_train))
+        print("\t\t\tTraining data Censored:", len(censored))
+        cases_train = cases_train + list(censored)
+        print("\t\t\tTraining data combined:", len(cases_train))
+
+    #     print("Validation data:", len(cases_val ))
+    #     print("Testing data   :", len(cases_test))
+        df_train = self.dataset.loc[self.dataset['CaseID'].isin(cases_train)].reset_index(drop=True)
+        df_val   = self.dataset.loc[self.dataset['CaseID'].isin(cases_val)  ].reset_index(drop=True)
+        df_test  = self.dataset.loc[self.dataset['CaseID'].isin(cases_test) ].reset_index(drop=True)
+        if scaling:
+            sc = StandardScaler()
+            df_train.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(df_train[["fvt1", "fvt2", "fvt3"]])
+            df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
+            df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
+
+        X_train,y_train = self.__xy_split(df_train, resolution)
+        X_val,y_val     = self.__xy_split(df_val,   resolution)
+        X_test,y_test   = self.__xy_split(df_test,  resolution)
+
+        return X_train, X_test, X_val, y_train, y_test, y_val
+
     
-    else:
-        dataset["U"] = 1
+    def __time_features(self,case):
+        first_index = case.index[0]
+        last_index  = case.index[-1]
+        if case.iloc[0].loc["U"] == 1:
+            endtime = case["CompleteTimestamp"][last_index]
+        else:
+            case.drop(last_index,axis=0,inplace=True)
+            last_index   = case.index[-1]
+            endtime = case["CompleteTimestamp"][last_index]
 
-    dataset.CompleteTimestamp = pd.to_datetime(dataset.CompleteTimestamp)
-    dataset = dataset.groupby("CaseID").apply(lambda case:time_features(case))
-    dataset.fvt1.fillna(0,inplace=True)
-#     dataset["weekday"] = dataset["CompleteTimestamp"].dt.weekday
-#     dummy1 = pd.get_dummies(dataset["weekday"],prefix="weekday",drop_first=True)
-    dummy2 = pd.get_dummies(dataset["ActivityID"],prefix="ActivityID",drop_first=True)
-#     dataset = pd.concat([dataset,dummy1,dummy2],axis=1)
-    dataset = pd.concat([dataset,dummy2],axis=1)
-    last_step = dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
-    dataset = dataset.drop(last_step,axis=0).reset_index(drop=True)
-    return dataset
+        starttime = case["CompleteTimestamp"][first_index]
+        case["fvt1"] = case["CompleteTimestamp"].diff(periods=1).dt.total_seconds()
+        case["fvt2"] = case["CompleteTimestamp"].dt.hour
+        case["fvt3"] = (case["CompleteTimestamp"] - starttime).dt.total_seconds()
+        case["T2E"]  = endtime - case["CompleteTimestamp"]
+        case["D2E"] = case["T2E"].dt.days
+        case["S2E"] = case["T2E"].dt.total_seconds()
+        case["H2E"] = case["S2E"]/3600
+        return case
 
-def smart_split(df, train_perc, val_perc,  suffix, resolution, scaling = True):
-    all_cases = set(df.CaseID.unique())
-    censored  = set(df.loc[df["U"] == 0]["CaseID"])
-    observed  = set(df.loc[df["U"] == 1]["CaseID"])
-    
-    tmp = df.groupby(["CaseID"]).count()
-    below_suffix = set(tmp.loc[tmp["ActivityID"] <  suffix].index)    
-    above_suffix = set(tmp.loc[tmp["ActivityID"] >= suffix].index)
-    print("\n\t\t\tTotal above suffix:", len(above_suffix))
-    above_suffix = list(above_suffix.intersection(observed))
-    
-    len_train = int(train_perc * len(above_suffix))
-    len_val = int(len_train*val_perc)
-    cases_train = above_suffix[0:len_train]
-    cases_val   = [cases_train.pop() for i in range(len_val)]
-    cases_test  = above_suffix[len_train:]
-    
-    print("\t\t\tTotal Observed:", len(observed))
-    print("\t\t\tTotal above suffix (observed):", len(above_suffix))
-    print("\t\t\tTraining data Observed:", len(cases_train))
-    print("\t\t\tTraining data Censored:", len(censored))
-    cases_train = cases_train + list(censored)
-    print("\t\t\tTraining data combined:", len(cases_train))
+    def __xy_split(self, data, resolution):
+        X = data.groupby(["CaseID"]).apply(lambda df:self.__extract_X(df))
+        X = np.array(tf.convert_to_tensor(X))
+        y = data.groupby(["CaseID"]).apply(lambda df:self.__extract_y(df, resolution))
+        y = np.array(tf.convert_to_tensor(y))
+        return X,y
 
-#     print("Validation data:", len(cases_val ))
-#     print("Testing data   :", len(cases_test))
-    df_train = df.loc[df['CaseID'].isin(cases_train)].reset_index(drop=True)
-    df_val   = df.loc[df['CaseID'].isin(cases_val)  ].reset_index(drop=True)
-    df_test  = df.loc[df['CaseID'].isin(cases_test) ].reset_index(drop=True)
-    if scaling:
-        sc = StandardScaler()
-        df_train.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(df_train[["fvt1", "fvt2", "fvt3"]])
-        df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
-        df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
-   
-    X_train,y_train = xy_split(df_train, resolution,  suffix)
-    X_val,y_val     = xy_split(df_val,   resolution,  suffix)
-    X_test,y_test   = xy_split(df_test,  resolution,  suffix)
+    def __extract_X(self, df):
+        feature_idx = np.concatenate(\
+                   np.where(df.columns.str.contains('ActivityID_')) + \
+    #                np.where(df_helpdesk_preprocessed.columns.str.contains('weekday_')) + \
+                   np.where(df.columns.str.contains('fvt'))
+                  )
+        x = []
+        if len(df) < self.suffix:
+            x.append(
+                np.concatenate(
+                    (np.full((self.suffix - df.shape[0] , len(feature_idx)),fill_value=0), 
+                     df.values[0:self.suffix,feature_idx]), 
+                     axis=0))
+        else:
+            x.append(df.values[0:self.suffix,feature_idx])
 
-    return X_train, X_test, X_val, y_train, y_test, y_val
+        x = np.hstack(np.array(x)).flatten()
+        x = x.reshape((self.suffix, len(feature_idx)))
 
+        return(x)
 
-def xy_split(processed_dataset, resolution, suffix):
-    X = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_X(df, suffix))
-    X = np.array(tf.convert_to_tensor(X))
-    y = processed_dataset.groupby(["CaseID"]).apply(lambda df:extract_y(df, suffix, resolution))
-    y = np.array(tf.convert_to_tensor(y))
-    return X,y
+    def __extract_y(self, df, resolution):
+        y = []
+        if resolution == 's':
+            time_idx = np.where(df.columns.str.contains("S2E"))[0]
+        elif resolution == 'h':
+            time_idx = np.where(df.columns.str.contains("H2E"))[0]
+        elif resolution == 'd':
+            time_idx = np.where(df.columns.str.contains("D2E"))[0]
+        else:
+            print("Defualt option chosen ==> daily")
+            time_idx = np.where(df.columns.str.contains("D2E"))[0]
 
-def extract_X(df,suffix):
-    feature_idx = np.concatenate(\
-               np.where(df.columns.str.contains('ActivityID_')) + \
-#                np.where(df_helpdesk_preprocessed.columns.str.contains('weekday_')) + \
-               np.where(df.columns.str.contains('fvt'))
-              )
-    x = []
-    if len(df) < suffix:
-        x.append(
-            np.concatenate(
-                (np.full((suffix - df.shape[0] , len(feature_idx)),fill_value=0), 
-                 df.values[0:suffix,feature_idx]), 
-                 axis=0))
-    else:
-        x.append(df.values[0:suffix,feature_idx])
-
-    x = np.hstack(np.array(x)).flatten()
-    x = x.reshape((suffix, len(feature_idx)))
-
-    return(x)
-
-def extract_y(df,suffix,resolution):
-    y = []
-    if resolution == 's':
-        time_idx = np.where(df.columns.str.contains("S2E"))[0]
-    elif resolution == 'h':
-        time_idx = np.where(df.columns.str.contains("H2E"))[0]
-    elif resolution == 'd':
-        time_idx = np.where(df.columns.str.contains("D2E"))[0]
-    else:
-        print("Defualt option chosen ==> daily")
-        time_idx = np.where(df.columns.str.contains("D2E"))[0]
-    
-#     
-    if len(df) <= suffix: 
-         y.append(df.values[-1,time_idx])
-    else:
-         y.append(df.values[suffix-1,time_idx])
-    y.append(df.loc[0,"U"])
-    y = np.hstack(np.array(y)).flatten()
-    y.reshape((1, 2))
-    return y
+        if len(df) <= self.suffix: 
+             y.append(df.values[-1,time_idx])
+        else:
+             y.append(df.values[self.suffix-1,time_idx])
+        y.append(df.loc[0,"U"])
+        y = np.hstack(np.array(y)).flatten()
+        y.reshape((1, 2))
+        return y
 
 def balance_labels_nb(X,y):
     bins = np.arange(0,y[:,0].max()+24, 24)
