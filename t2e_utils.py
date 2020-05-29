@@ -1,6 +1,7 @@
-import pandas as pd
 import numpy as np
-np.set_printoptions(threshold=np.inf)
+np.random.seed(0)
+import pandas as pd
+# np.set_printoptions(threshold=np.inf)
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
@@ -31,12 +32,15 @@ from sklearn.metrics import mean_absolute_error
 
 class t2e:
 
-    def __init__(self, dataset, suffix, censored, cen_prc):
+    def __init__(self, dataset, suffix, resolution, censored, cen_prc):
         self.dataset = dataset
         self.suffix = suffix
         self.censored = censored
         self.cen_prc = cen_prc
         self.censored_cases = []
+        self.batch_size = 128
+        self.resolution = resolution
+        self.model = None
         
     def preprocess(self):
         
@@ -72,7 +76,7 @@ class t2e:
         self.dataset = self.dataset.drop(last_step,axis=0).reset_index(drop=True)
         return self.dataset
 
-    def smart_split(self, train_prc, val_prc, resolution, scaling):
+    def smart_split(self, train_prc, val_prc, scaling):
         all_cases = set(self.dataset.CaseID.unique())
         censored  = set(self.censored_cases)
         observed  = list(all_cases.difference(censored))
@@ -89,11 +93,11 @@ class t2e:
         cases_val   = [cases_train.pop() for i in range(len_val)]
         cases_test  = observed[len_train:]
 
-        print("\t\t\tTotal Observed:", len(observed))
-        print("\t\t\tTraining data Observed:", len(cases_train))
-        print("\t\t\tTraining data Censored:", len(censored))
+        print("\tTotal Observed:", len(observed))
+        print("\tTraining data Observed:", len(cases_train))
+        print("\tTraining data Censored:", len(censored))
         cases_train = cases_train + list(censored)
-        print("\t\t\tTraining data combined:", len(cases_train))
+        print("\tTraining data combined:", len(cases_train))
 
     #     print("Validation data:", len(cases_val ))
     #     print("Testing data   :", len(cases_test))
@@ -106,12 +110,57 @@ class t2e:
             df_val.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_val[["fvt1", "fvt2", "fvt3"]])
             df_test.loc[:,["fvt1", "fvt2", "fvt3"]] = sc.transform(df_test[["fvt1", "fvt2", "fvt3"]])
 
-        X_train,y_train = self.__xy_split(df_train, resolution)
-        X_val,y_val     = self.__xy_split(df_val,   resolution)
-        X_test,y_test   = self.__xy_split(df_test,  resolution)
+        X_train,y_train = self.__xy_split(df_train)
+        X_val,y_val     = self.__xy_split(df_val)
+        X_test,y_test   = self.__xy_split(df_test)
 
         return X_train, X_test, X_val, y_train, y_test, y_val
 
+
+    def fit(self, X_train, y_train, X_val, y_val,size, vb = True, seed = 0):
+        
+        test_out_path = "testing_output/"
+        vb = vb
+        if vb:
+            print("\n")
+        np.random.seed(seed)
+        tf.random.set_seed(seed)
+        my_init = glorot_uniform(seed=seed)
+        tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
+        mean_u = np.nanmean(y_train[:,1].astype('float'))
+        init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
+        init_alpha = init_alpha/mean_u
+        history = History()
+        cri = 'val_loss'
+        csv_logger = CSVLogger(test_out_path + 'training.log', separator=',', append=False)
+        es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=50, restore_best_weights=False)
+        mc = ModelCheckpoint(test_out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
+        lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
+        n_features = X_train.shape[-1]
+
+        main_input = Input(shape=(None, n_features), name='main_input')
+        l1 = LSTM(size, activation='tanh', kernel_initializer=my_init, recurrent_dropout=0.2, return_sequences=False)(main_input)
+#         b1 = BatchNormalization()(l1)
+    #     l2 = LSTM(size, activation='tanh',kernel_initializer=my_init, recurrent_dropout=0.2,return_sequences=False)(b1)
+    #     b2 = BatchNormalization()(l2)
+        l4 = Dense(2, kernel_initializer=my_init, name='Dense_1')(l1)
+
+        output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(l4)
+        loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
+        self.model = Model(inputs=[main_input], outputs=[output])
+        self.model.compile(loss=loss, optimizer=Nadam(lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
+        mg_train = self.__batch_gen_train(X_train, y_train)
+        mg_val = self.__batch_gen_train(X_val, y_val)
+        self.model.fit_generator(mg_train, 
+                            epochs=500,
+                            steps_per_epoch = ceil(len(X_train) / self.batch_size),
+                            validation_data=(mg_val),
+                            validation_steps= ceil(len(X_val) / self.batch_size),
+                            verbose=vb,
+                            callbacks=[history,mc,es,csv_logger],
+                            shuffle=False)
+        self.model.load_weights(test_out_path + 'best_model.h5')
+        return
     
     def __time_features(self,case):
         first_index = case.index[0]
@@ -133,10 +182,10 @@ class t2e:
         case["H2E"] = case["S2E"]/3600
         return case
 
-    def __xy_split(self, data, resolution):
+    def __xy_split(self, data):
         X = data.groupby(["CaseID"]).apply(lambda df:self.__extract_X(df))
         X = np.array(tf.convert_to_tensor(X))
-        y = data.groupby(["CaseID"]).apply(lambda df:self.__extract_y(df, resolution))
+        y = data.groupby(["CaseID"]).apply(lambda df:self.__extract_y(df))
         y = np.array(tf.convert_to_tensor(y))
         return X,y
 
@@ -161,13 +210,13 @@ class t2e:
 
         return(x)
 
-    def __extract_y(self, df, resolution):
+    def __extract_y(self, df):
         y = []
-        if resolution == 's':
+        if self.resolution == 's':
             time_idx = np.where(df.columns.str.contains("S2E"))[0]
-        elif resolution == 'h':
+        elif self.resolution == 'h':
             time_idx = np.where(df.columns.str.contains("H2E"))[0]
-        elif resolution == 'd':
+        elif self.resolution == 'd':
             time_idx = np.where(df.columns.str.contains("D2E"))[0]
         else:
             print("Defualt option chosen ==> daily")
@@ -182,6 +231,54 @@ class t2e:
         y.reshape((1, 2))
         return y
 
+    
+    def __batch_gen_train(self,X, y):
+        n_batches = math.ceil(len(X) / self.batch_size)
+        while True: 
+            for i in range(n_batches):
+                X_batch = X[i*self.batch_size:(i+1)*self.batch_size, :,:]
+                y_batch = y[i*self.batch_size:(i+1)*self.batch_size, :]
+                yield X_batch, y_batch
+    
+    def __batch_gen_test(self,X):
+        n_batches = math.ceil(len(X) / self.batch_size)
+        while True: 
+            for i in range(n_batches):
+                X_batch = X[i*self.batch_size:(i+1)*self.batch_size, :,:]
+                yield X_batch
+
+
+    def evaluate(self, X,y):    
+        # Make some predictions and put them alongside the real TTE and event indicator values
+        mg_test = self.__batch_gen_test(X)
+        nb_samples = len(X)
+        y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
+    #     y_pred = model.predict(X)
+
+        test_result = np.concatenate((y, y_pred), axis=1)
+        test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
+        test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+
+        if self.resolution == 's':
+            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
+            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
+        elif self.resolution == 'h':
+            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
+            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
+        elif self.resolution == 'd':
+            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
+            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
+        test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
+                                      ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
+        accuracy = round(test_results_df["Accurate"].mean()*100,3)
+
+        return test_results_df, mae, accuracy
+    
+######################################################################################################################################
+    
 def balance_labels_nb(X,y):
     bins = np.arange(0,y[:,0].max()+24, 24)
     counts = np.histogram(y[:,0], bins=bins)[0]
@@ -199,91 +296,13 @@ def balance_labels_nb(X,y):
     return X, y
 
 
-batch_size = 128
-def batch_gen(X, y):
-    n_batches = math.ceil(len(X) / batch_size)
-    while True: 
-        for i in range(n_batches):
-            X_batch = X[i*batch_size:(i+1)*batch_size, :,:]
-            y_batch = y[i*batch_size:(i+1)*batch_size, :]
-            yield X_batch, y_batch
+
             
-def batch_gen_test(X):
-    n_batches = math.ceil(len(X) / batch_size)
-    while True: 
-        for i in range(n_batches):
-            X_batch = X[i*batch_size:(i+1)*batch_size, :,:]
-            yield X_batch
+
             
-def evaluating(X,y,model, resolution):    
-    # Make some predictions and put them alongside the real TTE and event indicator values
-    mg_test = batch_gen_test(X)
-    nb_samples = len(X)
-    y_pred = model.predict_generator(mg_test, steps= ceil(len(X) / batch_size))
-#     y_pred = model.predict(X)
 
-    test_result = np.concatenate((y, y_pred), axis=1)
-    test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
-    test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
-    
-    if resolution == 's':
-        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
-        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
-    elif resolution == 'h':
-        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
-        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
-    elif resolution == 'd':
-        test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
-        test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-        mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
-    test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
-                                  ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
-    accuracy = round(test_results_df["Accurate"].mean()*100,3)
 
-    return test_results_df, mae, accuracy
 
-def train(X_train, y_train, X_val, y_val, suffix, path):
-    np.random.seed(0)
-    tf.random.set_seed(0)
-    my_init = glorot_uniform()
-    
-    tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
-    mean_u = np.nanmean(y_train[:,1].astype('float'))
-    init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
-    init_alpha = init_alpha/mean_u
-    history = History()
-    cri = 'val_loss'
-    csv_logger = CSVLogger(path +'training_hist_'+str(suffix)+'.log', separator=',', append=False)
-    es = EarlyStopping(monitor=cri, mode='min', verbose=False, patience=100, restore_best_weights=True)
-    mc = ModelCheckpoint(path +'best_model_'+str(suffix)+'.h5', monitor=cri, mode='min', verbose=False, save_best_only=True, save_weights_only=True)
-    lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', epsilon=0.0001, cooldown=0, min_lr=0)
-    n_features = X_train.shape[-1]
-
-    main_input = Input(shape=(None, n_features), name='main_input')
-    l1 = GRU(64, activation='tanh', recurrent_dropout=0.2,return_sequences=True, kernel_initializer=my_init)(main_input)
-    b0 = BatchNormalization()(l1)
-    l11= GRU(16, activation='tanh',recurrent_dropout=0.2,return_sequences=False, kernel_initializer=my_init)(b0)
-    b1 = BatchNormalization()(l11)
-    l2 = Dense(2, name='Dense', kernel_initializer=my_init)(b1)
-    b2 = BatchNormalization()(l2)
-    output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(b2)
-    loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
-    model = Model(inputs=[main_input], outputs=[output])
-    model.compile(loss=loss, optimizer=Adam(lr=0.002))
-
-    mg_train = batch_gen(X_train, y_train)
-    mg_val = batch_gen(X_val, y_val)
-    model.fit_generator(mg_train, 
-                    epochs=500,
-                    steps_per_epoch = ceil(len(X_train) / batch_size),
-                    validation_data=(mg_val),
-                    validation_steps= ceil(len(X_val) / batch_size),
-                    verbose=False,
-                    callbacks=[lr_reducer,history,es,mc,csv_logger]
-                   )
-    return model
 
 """
 Discrete log-likelihood for Weibull hazard function on censored survival data
