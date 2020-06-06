@@ -1,5 +1,5 @@
 import numpy as np
-np.random.seed(0)
+np.random.seed(42)
 import pandas as pd
 # np.set_printoptions(threshold=np.inf)
 import matplotlib.pyplot as plt
@@ -12,14 +12,19 @@ import math
 from math import ceil
 from six.moves import xrange
 import tensorflow as tf
+tf.random.set_seed(42)
+
 from tensorflow.keras.models import load_model,Model
 from tensorflow.keras.initializers import glorot_uniform
+# my_init = glorot_uniform(seed =42)
+
 from tensorflow.keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
 from tensorflow.keras import backend as K
 from tensorflow.keras import callbacks
 from tensorflow.keras.initializers import glorot_uniform
 from tensorflow.keras.optimizers import RMSprop,Adam,Nadam
 from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
+
 import wtte.weibull as weibull
 import wtte.wtte as wtte
 from wtte.wtte import WeightWatcher
@@ -28,7 +33,6 @@ from sklearn.metrics import mean_absolute_error
 
 ##########################################################################################################################
 ##########################################################################################################################
-
 
 class t2e:
 
@@ -55,10 +59,10 @@ class t2e:
         ## Generate censored data:
         to_censor_from = list(self.dataset.groupby(["CaseID"]).count().loc[case_counts["ActivityID"] > self.suffix+1].index)
         self.censored_cases = np.random.choice(to_censor_from, int(len(to_censor_from)*self.cen_prc), replace=False)
+        print("first 10 censred cases",self.censored_cases[0:10])
         
         ## Create censored label U[1,0]:
         if self.censored == True:
-            np.random.seed(0)
             self.dataset["U"] = ~self.dataset['CaseID'].isin(self.censored_cases)*1
 
         else:
@@ -80,12 +84,6 @@ class t2e:
         all_cases = set(self.dataset.CaseID.unique())
         censored  = set(self.censored_cases)
         observed  = list(all_cases.difference(censored))
-#         observed  = set(self.dataset.loc[self.dataset["U"] == 1]["CaseID"])
-#         tmp = self.dataset.groupby(["CaseID"]).count()
-#         below_suffix = set(tmp.loc[tmp["ActivityID"] <  self.suffix].index)    
-#         above_suffix = set(tmp.loc[tmp["ActivityID"] >= self.suffix].index)
-#         print("\n\t\t\tTotal above suffix:", len(above_suffix))
-#         above_suffix = list(above_suffix.intersection(observed))
 
         len_train = int(train_prc * len(observed))
         len_val = int(len_train*val_prc)
@@ -96,8 +94,9 @@ class t2e:
         print("\tTotal Observed:", len(observed))
         print("\tTraining data Observed:", len(cases_train))
         print("\tTraining data Censored:", len(censored))
-        cases_train = cases_train + list(censored)
-        print("\tTraining data combined:", len(cases_train))
+        if self.censored:
+            cases_train = cases_train + list(censored)
+        print("\tTraining data to use:", len(cases_train))
 
     #     print("Validation data:", len(cases_val ))
     #     print("Testing data   :", len(cases_test))
@@ -117,15 +116,12 @@ class t2e:
         return X_train, X_test, X_val, y_train, y_test, y_val
 
 
-    def fit(self, X_train, y_train, X_val, y_val,size, vb = True, seed = 0):
+    def fit(self, X_train, y_train, X_val, y_val,size, vb = True):
         
         test_out_path = "testing_output/"
         vb = vb
         if vb:
             print("\n")
-        np.random.seed(seed)
-        tf.random.set_seed(seed)
-        my_init = glorot_uniform(seed=seed)
         tte_mean_train = np.nanmean(y_train[:,0].astype('float'))
         mean_u = np.nanmean(y_train[:,1].astype('float'))
         init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0) )
@@ -138,15 +134,19 @@ class t2e:
         lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
         n_features = X_train.shape[-1]
 
+        np.random.seed(42)
+        tf.random.set_seed(42)
         main_input = Input(shape=(None, n_features), name='main_input')
-        l1 = LSTM(size, activation='tanh', kernel_initializer=my_init, recurrent_dropout=0.2, return_sequences=False)(main_input)
-#         b1 = BatchNormalization()(l1)
-    #     l2 = LSTM(size, activation='tanh',kernel_initializer=my_init, recurrent_dropout=0.2,return_sequences=False)(b1)
-    #     b2 = BatchNormalization()(l2)
-        l4 = Dense(2, kernel_initializer=my_init, name='Dense_1')(l1)
+        l1 = LSTM(size, activation='tanh', recurrent_dropout=0.2, return_sequences=True)(main_input)
+        b1 = BatchNormalization()(l1)
+        l2 = LSTM(size, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
+        b2 = BatchNormalization()(l2)
+        l4 = Dense(2, name='Dense_1')(b2)
 
         output = Lambda(wtte.output_lambda, arguments={"init_alpha":init_alpha,"max_beta_value":100, "scalefactor":0.5})(l4)
         loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
+        np.random.seed(42)
+        tf.random.set_seed(42)
         self.model = Model(inputs=[main_input], outputs=[output])
         self.model.compile(loss=loss, optimizer=Nadam(lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
         mg_train = self.__batch_gen_train(X_train, y_train)
