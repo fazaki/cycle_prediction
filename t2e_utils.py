@@ -58,16 +58,11 @@ class t2e:
 
         ## Generate censored data:
         to_censor_from = list(self.dataset.groupby(["CaseID"]).count().loc[case_counts["ActivityID"] > self.suffix+1].index)
+        np.random.seed(42)
         self.censored_cases = np.random.choice(to_censor_from, int(len(to_censor_from)*self.cen_prc), replace=False)
-        print("first 10 censred cases",self.censored_cases[0:10])
+        print("first 10 censored cases",self.censored_cases[0:10])
         
-        ## Create censored label U[1,0]:
-        if self.censored == True:
-            self.dataset["U"] = ~self.dataset['CaseID'].isin(self.censored_cases)*1
-
-        else:
-            self.dataset["U"] = 1
-
+        self.dataset["U"] = ~self.dataset['CaseID'].isin(self.censored_cases)*1
         self.dataset.CompleteTimestamp = pd.to_datetime(self.dataset.CompleteTimestamp)
         self.dataset = self.dataset.groupby("CaseID").apply(lambda case:self.__time_features(case))
         self.dataset.fvt1.fillna(0,inplace=True)
@@ -98,8 +93,8 @@ class t2e:
             cases_train = cases_train + list(censored)
         print("\tTraining data to use:", len(cases_train))
 
-    #     print("Validation data:", len(cases_val ))
-    #     print("Testing data   :", len(cases_test))
+        print("\tValidation data:", len(cases_val ))
+        print("\tTesting data   :", len(cases_test))
         df_train = self.dataset.loc[self.dataset['CaseID'].isin(cases_train)].reset_index(drop=True)
         df_val   = self.dataset.loc[self.dataset['CaseID'].isin(cases_val)  ].reset_index(drop=True)
         df_test  = self.dataset.loc[self.dataset['CaseID'].isin(cases_test) ].reset_index(drop=True)
@@ -113,7 +108,7 @@ class t2e:
         X_val,y_val     = self.__xy_split(df_val)
         X_test,y_test   = self.__xy_split(df_test)
 
-        return X_train, X_test, X_val, y_train, y_test, y_val
+        return X_train, X_test, X_val, y_train, y_test, y_val, len(cases_train), len(cases_val), len(cases_test)
 
 
     def fit(self, X_train, y_train, X_val, y_val,size, vb = True):
@@ -159,8 +154,43 @@ class t2e:
                             verbose=vb,
                             callbacks=[history,mc,es,csv_logger],
                             shuffle=False)
-        self.model.load_weights(test_out_path + 'best_model.h5')
+        try:
+            self.model.load_weights(test_out_path + 'best_model.h5')
+        except:
+            self.model == None
         return
+
+    def evaluate(self, X,y):
+        # Make some predictions and put them alongside the real TTE and event indicator values
+        if self.model == None:
+            return np.nan, np.nan, np.nan
+        else:
+            mg_test = self.__batch_gen_test(X)
+            nb_samples = len(X)
+            y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
+        #     y_pred = model.predict(X)
+
+            test_result = np.concatenate((y, y_pred), axis=1)
+            test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
+            test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+
+            if self.resolution == 's':
+                test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
+                test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+                mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
+            elif self.resolution == 'h':
+                test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
+                test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+                mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
+            elif self.resolution == 'd':
+                test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
+                test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
+                mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
+            test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
+                                          ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
+            accuracy = round(test_results_df["Accurate"].mean()*100,3)
+
+            return test_results_df, mae, accuracy
     
     def __time_features(self,case):
         first_index = case.index[0]
@@ -248,34 +278,7 @@ class t2e:
                 yield X_batch
 
 
-    def evaluate(self, X,y):    
-        # Make some predictions and put them alongside the real TTE and event indicator values
-        mg_test = self.__batch_gen_test(X)
-        nb_samples = len(X)
-        y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
-    #     y_pred = model.predict(X)
 
-        test_result = np.concatenate((y, y_pred), axis=1)
-        test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
-        test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
-
-        if self.resolution == 's':
-            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
-            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
-        elif self.resolution == 'h':
-            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
-            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
-        elif self.resolution == 'd':
-            test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
-            test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-            mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
-        test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
-                                      ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
-        accuracy = round(test_results_df["Accurate"].mean()*100,3)
-
-        return test_results_df, mae, accuracy
     
 ######################################################################################################################################
     
