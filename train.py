@@ -32,7 +32,7 @@ range_dict = {
 
 def grid_search(dataset, res, censored, cen_per):
     
-    cols = ["suffix", "Layer_Size", "MAE", "unique_pred", "train_size", "val_size", "test_size"]
+    cols = ["suffix", "Layer_Size", "MAE", "unique_pred", "train_size", "val_size", "test_size","Censored %"]
     grid_results = pd.DataFrame(columns = cols)
     for suffix in range_dict[dataset]:
         print("\ndataset:", dataset, "\tSuffix:", suffix)
@@ -43,28 +43,38 @@ def grid_search(dataset, res, censored, cen_per):
                       cen_prc = cen_per)
         dataset_preprocessed = t2e_obj.preprocess()
         X_train, X_test, X_val, y_train, y_test, y_val, len_train, len_val, len_test = t2e_obj.smart_split(train_prc = 0.7,
-                                                                                                             val_prc = 0.4,
+                                                                                                             val_prc = 0.45,
                                                                                                              scaling=True)
         for layer_size in [2,4,8,32]:
             
             print("Layer size:",layer_size, end = " ..... ")
-            t2e_obj.fit(X_train, y_train, X_val, y_val,size=layer_size, vb = False)
+            t2e_obj.fit_regression(X_train, y_train, X_val, y_val,size=layer_size, vb = False)
             print("Done")
             test_result_df, mae, accuracy = t2e_obj.evaluate(X_test,y_test)            
-            nunique = test_result_df["predicted_mode"].nunique()
-            grid_results = grid_results.append(pd.DataFrame([[suffix,layer_size,mae,nunique, len_train,len_val,len_test]] , columns = cols), ignore_index=True)
+            nunique = test_result_df["T_pred"].nunique()
+            cen_percentage = t2e_obj.get_cen_prc()
+            grid_results = grid_results.append(pd.DataFrame([[suffix,layer_size,mae,nunique, len_train,len_val,len_test, cen_percentage]] , columns = cols), ignore_index=True)
     return grid_results
 
-mae_path = 'output_files/maes/double_layer/'
 
 
-for dataset in ['c']:
+for dataset in ['a','b','c','d']:
+     ## Regression
+#     mae_path = 'output_files/maes/regression/'
+#     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.0)
+#     pickle.dump(grid_results, open(mae_path + 'regression_'+dataset+'_complete.pkl', 'wb'))
+    
+#     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.4)
+#     pickle.dump(grid_results, open(mae_path + 'regression_'+dataset+'_reduced.pkl', 'wb'))
+    
+   ## T2E
+    mae_path = 'output_files/maes/double_layer/noweekday/'
 
     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.0)
     pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_complete.pkl', 'wb'))
     
     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.4)
-    pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_observed.pkl', 'wb'))
+    pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_reduced.pkl', 'wb'))
 
     grid_results = grid_search(dataset=dataset,res='s',censored=True,cen_per=0.4)
     pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_censored.pkl', 'wb'))
