@@ -60,21 +60,22 @@ def grid_search(dataset, res, censored, cen_per):
 
 for dataset in ['a','b','c','d']:
      ## Regression
-#     mae_path = 'output_files/maes/regression/'
+#     mae_path = 'output_files/maes/regression/00/'
 #     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.0)
 #     pickle.dump(grid_results, open(mae_path + 'regression_'+dataset+'_complete.pkl', 'wb'))
-    
+#     mae_path = 'output_files/maes/regression/10/'
 #     grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.4)
 #     pickle.dump(grid_results, open(mae_path + 'regression_'+dataset+'_reduced.pkl', 'wb'))
     
-   ## T2E
-    mae_path = 'output_files/maes/double_layer/noweekday/'
+#    ## T2E
+    for cen_prc in [10,20,30,50,60,70,80,90]:
+        mae_path = 'output_files/maes/t2e/'+str(cen_prc) +'/'
 
-    grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.0)
-    pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_complete.pkl', 'wb'))
-    
-    grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.4)
-    pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_reduced.pkl', 'wb'))
+#         grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=0.0)
+#         pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_complete.pkl', 'wb'))
+        print('### Censored percentage:',cen_prc/100.0)
+        grid_results = grid_search(dataset=dataset,res='s',censored=False,cen_per=cen_prc/100.0)
+        pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_reduced.pkl', 'wb'))
 
-    grid_results = grid_search(dataset=dataset,res='s',censored=True,cen_per=0.4)
-    pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_censored.pkl', 'wb'))
+        grid_results = grid_search(dataset=dataset,res='s',censored=True,cen_per=cen_prccen_prc/100.0)
+        pickle.dump(grid_results, open(mae_path + 't2e_'+dataset+'_censored.pkl', 'wb'))
