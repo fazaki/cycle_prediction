@@ -6,7 +6,6 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
 from matplotlib.gridspec import GridSpec
-import matplotlib.ticker as ticker
 import seaborn as sns
 import math
 from math import ceil
@@ -18,7 +17,6 @@ from tensorflow.keras.initializers import glorot_uniform
 from tensorflow.keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
 from tensorflow.keras import backend as K
 from tensorflow.keras import callbacks
-from tensorflow.keras.initializers import glorot_uniform
 from tensorflow.keras.optimizers import RMSprop,Adam,Nadam
 from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
 import wtte.weibull as weibull
@@ -27,6 +25,7 @@ from wtte.wtte import WeightWatcher
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
 import time
+from weibull_utils import weibull_pdf, weibull_median, weibull_mean, weibull_mode
 ##########################################################################################################################
 ##########################################################################################################################
 
@@ -38,12 +37,11 @@ class t2e:
         Args:
             dataset (obj): Dataframe of the trace dataset in the form of:
             prefix (int): Number of history prefixes to train with.
+            resolution (str): remaining time resolution {'s': 'seconds', 'h':'hours', 'd':'days'}
             censored (bool): Whether to randomely censor some traces.
-            cen_prc (float): 0.0 -> 1.0, represents the percentage of censored traces.
-            prefix (:obj:`int`, optional): Description of `param2`. Multiple
-                lines are supported.
-            fit_type (:obj:`list` of :obj:`str`): Description of `param3`.
-            transform (str): Description of `param1`.
+            cen_prc (float): 0.0 -> 1.0, represents the percentage of censored traces to generate.
+            fit_type (str): t2e (default) => for furture development.
+            transform (bool): Transform the output to a new space where it is less biased toward short traces.
 
         """
         self.dataset = dataset
@@ -94,7 +92,6 @@ class t2e:
         self.dataset = pd.concat([self.dataset,dummy],axis=1)
         last_step = self.dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
         self.dataset = self.dataset.drop(last_step,axis=0).reset_index(drop=True)
-        return self.dataset
 
     def smart_split(self, train_prc, val_prc, scaling):
         all_cases = set(self.dataset.CaseID.unique())
@@ -142,7 +139,7 @@ class t2e:
             y_train[:,0] = y_train[:,0]**self.root
             y_val[:,0] = y_val[:,0]**self.root
             print('Y_label has been transformed')
-        test_out_path = "testing_output/"
+        out_path = "../output_files/"
         vb = vb
         if vb:
             print("\n")
@@ -152,10 +149,9 @@ class t2e:
         init_alpha = init_alpha/mean_u
         history = History()
         cri = 'val_loss'
-        csv_logger = CSVLogger(test_out_path + 'training.log', separator=',', append=False)
+        csv_logger = CSVLogger(out_path + 'training.log', separator=',', append=False)
         es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=15, restore_best_weights=False)
-        mc = ModelCheckpoint(test_out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
-        lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=42, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
+        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
         n_features = X_train.shape[-1]
 
         np.random.seed(sd)
@@ -185,7 +181,7 @@ class t2e:
                             callbacks=[history,mc,es,csv_logger],
                             shuffle=False)
         try:
-            self.model.load_weights(test_out_path + 'best_model.h5')
+            self.model.load_weights(out_path + 'best_model.h5')
             print('model loaded successfully')
         except:
             self.model == None
@@ -196,16 +192,15 @@ class t2e:
 
     def fit_regression(self, X_train, y_train, X_val, y_val,size, vb = True):
         
-        test_out_path = "testing_output/"
+        out_path = "../output_files/"
         vb = vb
         if vb:
             print("\n")
         history = History()
         cri = 'va_loss'
-        csv_logger = CSVLogger(test_out_path + 'training.log', separator=',', append=False)
+        csv_logger = CSVLogger(out_path + 'training.log', separator=',', append=False)
         es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=42, restore_best_weights=False)
-        mc = ModelCheckpoint(test_out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
-        lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
+        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
         n_features = X_train.shape[-1]
 
         np.random.seed(sd)
@@ -216,8 +211,6 @@ class t2e:
         l2 = LSTM(size/2, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
         b2 = BatchNormalization()(l2)
         output = Dense(1, name='output')(b2)
-    
-        loss = wtte.loss(kind='continuous',reduce_loss=False).loss_function
         np.random.seed(sd)
         tf.random.set_seed(sd)
         self.model = Model(inputs=[main_input], outputs=[output])
@@ -234,7 +227,7 @@ class t2e:
                             callbacks=[history,mc,es,csv_logger],
                             shuffle=False)
         try:
-            self.model.load_weights(test_out_path + 'best_model.h5')
+            self.model.load_weights(out_path + 'best_model.h5')
         except:
             self.model == None
             
@@ -247,7 +240,6 @@ class t2e:
             return None
         else:
             mg_test = self.__batch_gen_test(X)
-            nb_samples = len(X)
             y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
             y_pred_df = pd.DataFrame(y_pred, columns=['alpha', 'beta'])
             y_pred =  y_pred_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
@@ -256,10 +248,9 @@ class t2e:
     def evaluate(self, X,y):
         # Make some predictions and put them alongside the real TTE and event indicator values
         if self.model == None:
-            return np.nan, np.nan, np.nan
+            return np.nan, np.nan
         else:
             mg_test = self.__batch_gen_test(X)
-            nb_samples = len(X)
             y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
             test_result = np.concatenate((y, y_pred), axis=1)
             
@@ -278,7 +269,7 @@ class t2e:
                     test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
                     mae = mean_absolute_error(test_results_df['T'], test_results_df['T_pred'])
                 test_results_df["Accurate"] = test_results_df["MAE"] <= 2
-                accuracy = round(test_results_df["Accurate"].mean()*100,3)
+                # accuracy = round(test_results_df["Accurate"].mean()*100,3)
 
             if self.regression == False:    
                 test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
@@ -300,8 +291,8 @@ class t2e:
                     mae = mean_absolute_error(test_results_df['T'], test_results_df['T_pred'])
                 test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
                                               ((test_results_df["U"] == 0) & (test_results_df['T_pred'] >= test_results_df["T"]))
-                accuracy = round(test_results_df["Accurate"].mean()*100,3)
-            return test_results_df, mae, accuracy
+                # accuracy = round(test_results_df["Accurate"].mean()*100,3)
+            return test_results_df, mae
     
     def get_cen_prc(self):
         try:
@@ -402,184 +393,3 @@ class t2e:
             for i in range(n_batches):
                 X_batch = X[i*self.batch_size:(i+1)*self.batch_size, :,:]
                 yield X_batch
-
-
-
-    
-######################################################################################################################################
-    
-# def balance_labels_nb(X,y):
-#     bins = np.arange(0,y[:,0].max()+24, 24)
-#     counts = np.histogram(y[:,0], bins=bins)[0]
-#     count_all = np.count_nonzero(counts)
-#     avg = math.ceil(len(y) / count_all)
-#     avg = 30
-#     for i in range(len(bins)-1):
-#         count_i = counts[i]
-#         if count_i > avg:
-#             num_delete = count_i - avg
-#             print(i, "count:",count_i, "avg:", avg, "to_del:", num_delete, "Act_count:", len(np.squeeze(np.argwhere((y[:,0] >= bins[i]) & (y[:,0] < bins[i+1])))))
-#             idx_delete = np.random.choice(np.squeeze(np.argwhere((y[:,0] >= bins[i]) & (y[:,0]< bins[i+1]))), num_delete, replace=False)
-#             X = np.delete(X, idx_delete , 0)
-#             y = np.delete(y, idx_delete , 0)
-#     return X, y
-
-# """
-# Discrete log-likelihood for Weibull hazard function on censored survival data
-#     y_true is a (samples, 2) tensor containing time-to-event (y), and an event indicator (u)
-#     ab_pred is a (samples, 2) tensor containing predicted Weibull alpha (a) and beta (b) parameters
-#     For math, see https://ragulpr.github.io/assets/draft_master_thesis_martinsson_egil_wtte_rnn_2016.pdf (Page 35)
-# """
-# def weibull_loglik_discrete(y_true, ab_pred, name=None):
-#     y_ = y_true[:, 0]
-#     u_ = y_true[:, 1]
-#     a_ = ab_pred[:, 0]
-#     b_ = ab_pred[:, 1]
-
-#     hazard0 = k.pow((y_ + 1e-35) / a_, b_)
-#     hazard1 = k.pow((y_ + 1) / a_, b_)
-
-#     return -1 * k.mean(u_ * k.log(k.exp(hazard1 - hazard0) - 1.0) - hazard1)
-
-# """
-#     Not used for this model, but included in case somebody needs it
-#     For math, see https://ragulpr.github.io/assets/draft_master_thesis_martinsson_egil_wtte_rnn_2016.pdf (Page 35)
-# """
-# def weibull_loglik_continuous(y_true, ab_pred, name=None):
-#     y_ = y_true[:, 0]
-#     u_ = y_true[:, 1]
-#     a_ = ab_pred[:, 0]
-#     b_ = ab_pred[:, 1]
-
-#     ya = (y_ + 1e-35) / a_
-#     return -1 * k.mean(u_ * (k.log(b_) + b_ * k.log(ya)) - k.pow(ya, b_))
-
-# """
-#     Custom Keras activation function, outputs alpha neuron using exponentiation and beta using softplus
-# """
-# def activate(ab):
-#     a = k.exp(ab[:, 0])
-#     b = k.softplus(ab[:, 1])
-
-#     a = k.reshape(a, (k.shape(a)[0], 1))
-#     b = k.reshape(b, (k.shape(b)[0], 1))
-
-#     return k.concatenate((a, b), axis=1)
-# ##########################################################################################################################
-# ##########################################################################################################################
-
-# def validate_df(df):
-#     df_len = df.shape[0]
-#     summary = []
-#     for i in range(len(df.columns)):
-#         summary_1 = [0]*5
-#         summary_1[0] = df.columns[i]
-#         summary_1[1] = sum(df.iloc[:,i]== 0.0)
-#         summary_1[2] = "{0:.1f}".format(sum(df.iloc[:,i]== 0.0)/df_len*100)
-#         summary_1[3] = sum(df.iloc[:,i].isnull())
-#         summary_1[4] = "{0:.1f}".format(sum(df.iloc[:,i].isnull())/df_len*100)
-#         summary.append(summary_1)
-    
-#     report = pd.DataFrame(summary, columns=["Feature_Name","Zero_Count","Zero_Percentage", "Null_Count", "Null_Percentage"])
-#     return report
-# ##########################################################################################################################
-# ##########################################################################################################################
-# def interpolate_df(x,lim = 2):
-#     x.iloc[0]  = x.fillna(method='bfill',axis=0,limit=1).iloc[0]
-#     x.iloc[-1] = x.fillna(method='ffill',axis=0,limit=1).iloc[-1]
-#     try:
-#         x.interpolate(method='slinear',limit =lim,axis=0,inplace =True)
-#     except:
-#         pass
-#     return(x)
-# ##########################################################################################################################
-# ##########################################################################################################################
-def weibull_pdf(alpha, beta, t):
-    return (beta/alpha) * ((t+1e-35)/alpha)**(beta-1)*np.exp(- ((t+1e-35)/alpha)**beta)
-
-def weibull_median(alpha, beta):
-    return alpha*(-np.log(.5))**(1/beta)
-
-def weibull_mean(alpha, beta):
-    return alpha * math.gamma(1 + 1/beta)
-
-def weibull_mode(alpha, beta):
-    if beta < 1:
-        return 0
-    return alpha * ((beta-1)/beta)**(1/beta)
-##########################################################################################################################
-##########################################################################################################################
-def plot_predictions_insights(results_df):
-
-    plt.figure(figsize=(12,8))
-    t=np.arange(0,300)
-    
-    plt.subplot(2,2,1)
-    observed = results_df.loc[results_df['U'] == 1]
-    sns.scatterplot(observed['T'], observed["T_pred"],hue=observed["Accurate"])
-    plt.xlabel("Actual failure time",fontsize=12)
-    plt.ylabel("Predicted failure time",fontsize=12)
-    plt.title('Actual Vs. Predicted (Observed)',fontsize=18)
-    plt.legend(loc = 'upper left')
-    
-    plt.subplot(2,2,2)
-    censored = results_df.loc[results_df['U'] == 0]
-    sns.scatterplot(censored['T'], censored["T_pred"],hue=censored["Accurate"])
-    plt.xlabel("Time of observation",fontsize=12)
-    plt.ylabel("Predicted failure time",fontsize=12)
-    plt.title('Actual Vs. Predicted (Censored)',fontsize=18)
-    plt.legend(loc = 'upper left')
-        
-    plt.subplot(2,2,(3,4))
-    sns.distplot(results_df['error (days)'], bins=100, kde=True,hist=True, norm_hist=False, label="Error Rate")
-    plt.title('Error distribution',fontsize=18)
-    plt.legend(loc = 'upper left')
-    plt.xlabel("Error Shift",fontsize=12)
-
-#     plt.subplot(3,2,(5,6))
-#     x = results_df.groupby(["T","U"]).agg({"Accurate":"mean"}).reset_index()
-#     x["Error_Rate"] = 1-x["Accurate"]
-#     sns.barplot(x= x["T"].astype("int"), y=x["Error_Rate"], hue=x["U"])
-#     plt.title('Error rate per time step')
-    
-    plt.tight_layout()
-    plt.show()
-    
-    
-# ##########################################################################################################################
-# ##########################################################################################################################
-
-# def plot_top_predictions(result_df, lim=10, top_feature = "abs_error", ascending = True, U = 1,accurate = True):
-    
-#     result_df = result_df.loc[(result_df["Accurate"] == accurate) & (result_df["U"] == U)]
-#     top_accurate = result_df.sort_values(by=top_feature, ascending = ascending).head(lim).index
-#     result_df.sort_values(by=top_feature, ascending = ascending).head(lim)
-#     fig, axarr = plt.subplots(len(top_accurate), figsize=(15,len(top_accurate)*3))
-
-#     for n,i in enumerate(top_accurate):
-#         ax = axarr[n]
-#         T    = result_df.loc[i,'T']
-#         U    = result_df.loc[i,'U']
-#         alpha= result_df.loc[i,'alpha']
-#         beta = result_df.loc[i,'beta']
-#         mode = result_df.loc[i,'T_pred']
-
-#         y_max_1 = weibull_pdf(alpha, beta, mode)    
-#         y_max_2 = weibull_pdf(alpha, beta, T)    
-
-#         t=np.arange(0,20)
-#         ax.plot(t, weibull_pdf(alpha, beta, t), color='w', label="Weibull distribution")
-#         ax.vlines(mode, ymin=0, ymax=y_max_1, colors='k', linestyles='--', label="Predicted failure time")
-#         ax.scatter(T, weibull_pdf(alpha,beta, T), color='r', s=100, label="Actual failure time")
-#         ax.set_facecolor('#A0A0A0')
-#         ax.xaxis.grid(b=True, which="major", color='k', linestyle='-.', linewidth=0.1)
-#         ax.set_xticklabels(np.append(0, np.unique(t)))
-#         ax.set_xlim(left = 0)
-#         ax.set_ylim(bottom = 0)
-#         ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
-    
-#         if n == 0:
-#             ax.legend(frameon=True,fancybox=True,shadow=True,facecolor='lightgray')
-#             ax.set_title("Time-to-Failure distribution",pad =20, fontsize = 20)
-#     #plt.tight_layout()
-#     plt.show()
