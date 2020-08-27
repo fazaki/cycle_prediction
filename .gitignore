@@ -3,6 +3,6 @@ data
 output_files
 __pycache__
 *.pkl
-*.h5
-*.log
 *TAX*
+testing*
+My*

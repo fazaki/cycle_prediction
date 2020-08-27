@@ -2,7 +2,6 @@ sd = 100
 import numpy as np
 np.random.seed(sd)
 import pandas as pd
-# np.set_printoptions(threshold=np.inf)
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import matplotlib.ticker as ticker
@@ -14,39 +13,56 @@ from math import ceil
 from six.moves import xrange
 import tensorflow as tf
 tf.random.set_seed(sd)
-
 from tensorflow.keras.models import load_model,Model
 from tensorflow.keras.initializers import glorot_uniform
-
 from tensorflow.keras.layers import Dense,LSTM,GRU,Activation,Masking,BatchNormalization,Lambda,Input
 from tensorflow.keras import backend as K
 from tensorflow.keras import callbacks
 from tensorflow.keras.initializers import glorot_uniform
 from tensorflow.keras.optimizers import RMSprop,Adam,Nadam
 from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
-
 import wtte.weibull as weibull
 import wtte.wtte as wtte
 from wtte.wtte import WeightWatcher
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_absolute_error
-
+import time
 ##########################################################################################################################
 ##########################################################################################################################
 
 class t2e:
+    """A class for time to event data preprocessing, fitting and evaluation."""
+    def __init__(self, dataset, prefix, resolution, censored, cen_prc, fit_type = 't2e', transform =False):
+        """Initializes the t2e object with the desired setup
 
-    def __init__(self, dataset, suffix, resolution, censored, cen_prc):
+        Args:
+            dataset (obj): Dataframe of the trace dataset in the form of:
+            prefix (int): Number of history prefixes to train with.
+            censored (bool): Whether to randomely censor some traces.
+            cen_prc (float): 0.0 -> 1.0, represents the percentage of censored traces.
+            prefix (:obj:`int`, optional): Description of `param2`. Multiple
+                lines are supported.
+            fit_type (:obj:`list` of :obj:`str`): Description of `param3`.
+            transform (str): Description of `param1`.
+
+        """
         self.dataset = dataset
-        self.suffix = suffix
+        self.prefix = prefix
         self.censored = censored
         self.cen_prc = cen_prc
         self.censored_cases = []
         self.all_cases = []
         self.batch_size = 128
         self.resolution = resolution
+        self.transform = transform
+        self.root = 1
+        self.power = 1
         self.model = None
-        self.regression = True
+        if fit_type == 't2e':
+            self.regression = False
+        else:
+            self.regression = True
+        self.fit_time = 0
         
     def preprocess(self):
         
@@ -54,30 +70,28 @@ class t2e:
         self.dataset.sort_values(["CaseID", "CompleteTimestamp"],ascending=True)
         case_counts = self.dataset.groupby(["CaseID"]).count()
         
-        # Only keep sequences that has at least suffix + 1 records
-        to_drop = list(case_counts.loc[case_counts["ActivityID"] <= self.suffix].index)
+        # Only keep sequences that has at least prefix + 1 records
+        to_drop = list(case_counts.loc[case_counts["ActivityID"] <= self.prefix].index)
         self.dataset = self.dataset.loc[~self.dataset["CaseID"].isin(to_drop)].reset_index(drop=True)
         self.all_cases = self.dataset["CaseID"].unique()
-        
+        print('all cases',len(self.all_cases))
         ## Generate censored data:
-        to_censor_from = list(self.dataset.groupby(["CaseID"]).count().loc[case_counts["ActivityID"] > self.suffix+1].index)
+        to_censor_from = list(self.dataset.groupby(["CaseID"]).count().loc[case_counts["ActivityID"] > self.prefix+1].index)
         try:
             np.random.seed(sd)
             self.censored_cases = np.random.choice(to_censor_from, int(len(self.all_cases)*self.cen_prc), replace=False)
+
         except:
             self.censored_cases = np.array(to_censor_from)
-            
+
         print("first 10 censored cases",self.censored_cases[0:10])
         
         self.dataset["U"] = ~self.dataset['CaseID'].isin(self.censored_cases)*1
         self.dataset.CompleteTimestamp = pd.to_datetime(self.dataset.CompleteTimestamp)
         self.dataset = self.dataset.groupby("CaseID").apply(lambda case:self.__time_features(case))
         self.dataset.fvt1.fillna(0,inplace=True)
-        self.dataset["weekday"] = self.dataset["CompleteTimestamp"].dt.weekday
-        dummy1 = pd.get_dummies(self.dataset["weekday"],prefix="weekday",drop_first=True)
-        dummy2 = pd.get_dummies(self.dataset["ActivityID"],prefix="ActivityID",drop_first=True)
-        self.dataset = pd.concat([self.dataset,dummy1,dummy2],axis=1)
-        self.dataset = pd.concat([self.dataset,dummy2],axis=1)
+        dummy = pd.get_dummies(self.dataset["ActivityID"],prefix="ActivityID",drop_first=True)
+        self.dataset = pd.concat([self.dataset,dummy],axis=1)
         last_step = self.dataset.drop_duplicates(subset=["CaseID"],keep='last')["ActivityID"].index
         self.dataset = self.dataset.drop(last_step,axis=0).reset_index(drop=True)
         return self.dataset
@@ -121,7 +135,13 @@ class t2e:
 
 
     def fit(self, X_train, y_train, X_val, y_val,size, vb = True):
-        
+        if self.transform == True:
+            self.root = 3
+            self.root = 1/self.root
+            self.power = 1/self.root
+            y_train[:,0] = y_train[:,0]**self.root
+            y_val[:,0] = y_val[:,0]**self.root
+            print('Y_label has been transformed')
         test_out_path = "testing_output/"
         vb = vb
         if vb:
@@ -133,17 +153,17 @@ class t2e:
         history = History()
         cri = 'val_loss'
         csv_logger = CSVLogger(test_out_path + 'training.log', separator=',', append=False)
-        es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=50, restore_best_weights=False)
+        es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=15, restore_best_weights=False)
         mc = ModelCheckpoint(test_out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
-        lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
+        lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=42, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
         n_features = X_train.shape[-1]
 
         np.random.seed(sd)
         tf.random.set_seed(sd)
         main_input = Input(shape=(None, n_features), name='main_input')
-        l1 = LSTM(size, activation='tanh', recurrent_dropout=0.2, return_sequences=True)(main_input)
+        l1 = GRU(size, activation='tanh', recurrent_dropout=0.2, return_sequences=True)(main_input)
         b1 = BatchNormalization()(l1)
-        l2 = LSTM(size, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
+        l2 = GRU(size, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
         b2 = BatchNormalization()(l2)
         l4 = Dense(2, name='Dense_1')(b2)
 
@@ -155,6 +175,7 @@ class t2e:
         self.model.compile(loss=loss, optimizer=Nadam(lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
         mg_train = self.__batch_gen_train(X_train, y_train)
         mg_val = self.__batch_gen_train(X_val, y_val)
+        start = time.time()
         self.model.fit_generator(mg_train, 
                             epochs=500,
                             steps_per_epoch = ceil(len(X_train) / self.batch_size),
@@ -165,8 +186,12 @@ class t2e:
                             shuffle=False)
         try:
             self.model.load_weights(test_out_path + 'best_model.h5')
+            print('model loaded successfully')
         except:
             self.model == None
+            
+        end = time.time()
+        self.fit_time = np.round(end-start,0)
         return
 
     def fit_regression(self, X_train, y_train, X_val, y_val,size, vb = True):
@@ -176,9 +201,9 @@ class t2e:
         if vb:
             print("\n")
         history = History()
-        cri = 'val_loss'
+        cri = 'va_loss'
         csv_logger = CSVLogger(test_out_path + 'training.log', separator=',', append=False)
-        es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=50, restore_best_weights=False)
+        es = EarlyStopping(monitor=cri, mode='min', verbose=vb, patience=42, restore_best_weights=False)
         mc = ModelCheckpoint(test_out_path + 'best_model.h5', monitor=cri, mode='min', verbose=vb, save_best_only=True, save_weights_only=True)
         lr_reducer = ReduceLROnPlateau(monitor=cri, factor=0.5, patience=10, verbose=0, mode='auto', min_delta=0.0001, cooldown=0, min_lr=0)
         n_features = X_train.shape[-1]
@@ -188,7 +213,7 @@ class t2e:
         main_input = Input(shape=(None, n_features), name='main_input')
         l1 = LSTM(size, activation='tanh', recurrent_dropout=0.2, return_sequences=True)(main_input)
         b1 = BatchNormalization()(l1)
-        l2 = LSTM(size, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
+        l2 = LSTM(size/2, activation='tanh', recurrent_dropout=0.2,return_sequences=False)(b1)
         b2 = BatchNormalization()(l2)
         output = Dense(1, name='output')(b2)
     
@@ -199,7 +224,7 @@ class t2e:
         self.model.compile(loss={'output':'mae'}, optimizer=Nadam(lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
         mg_train = self.__batch_gen_train(X_train, y_train)
         mg_val = self.__batch_gen_train(X_val, y_val)
-        
+        start = time.time()
         self.model.fit_generator(mg_train, 
                             epochs=500,
                             steps_per_epoch = ceil(len(X_train) / self.batch_size),
@@ -212,8 +237,21 @@ class t2e:
             self.model.load_weights(test_out_path + 'best_model.h5')
         except:
             self.model == None
+            
+        end = time.time()
+        self.fit_time = np.round(end-start,0)
         return
     
+    def predict(self, X):
+        if self.model == None:
+            return None
+        else:
+            mg_test = self.__batch_gen_test(X)
+            nb_samples = len(X)
+            y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
+            y_pred_df = pd.DataFrame(y_pred, columns=['alpha', 'beta'])
+            y_pred =  y_pred_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+            return y_pred
     
     def evaluate(self, X,y):
         # Make some predictions and put them alongside the real TTE and event indicator values
@@ -223,7 +261,6 @@ class t2e:
             mg_test = self.__batch_gen_test(X)
             nb_samples = len(X)
             y_pred = self.model.predict_generator(mg_test, steps= ceil(len(X) / self.batch_size))
-        #     y_pred = model.predict(X)
             test_result = np.concatenate((y, y_pred), axis=1)
             
             if self.regression == True:
@@ -245,21 +282,24 @@ class t2e:
 
             if self.regression == False:    
                 test_results_df = pd.DataFrame(test_result, columns=['T', 'U', 'alpha', 'beta'])
-                test_results_df['predicted_mode'] =   test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+                test_results_df['T_pred'] =  test_results_df[['alpha', 'beta']].apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+                if self.transform == True:
+                    test_results_df['T_pred'] = test_results_df['T_pred']**self.power
+                    print("Y_label is restored")
                 if self.resolution == 's':
-                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 86400
+                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['T_pred']) / 86400
                     test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-                    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 86400
+                    mae = mean_absolute_error(test_results_df['T'], test_results_df['T_pred']) / 86400
                 elif self.resolution == 'h':
-                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode']) / 24
+                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['T_pred']) / 24
                     test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-                    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode']) / 24
+                    mae = mean_absolute_error(test_results_df['T'], test_results_df['T_pred']) / 24
                 elif self.resolution == 'd':
-                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['predicted_mode'])
+                    test_results_df['error (days)'] = (test_results_df['T'] - test_results_df['T_pred'])
                     test_results_df["MAE"] = np.absolute(test_results_df["error (days)"])
-                    mae = mean_absolute_error(test_results_df['T'], test_results_df['predicted_mode'])
+                    mae = mean_absolute_error(test_results_df['T'], test_results_df['T_pred'])
                 test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
-                                              ((test_results_df["U"] == 0) & (test_results_df["predicted_mode"] >= test_results_df["T"]))
+                                              ((test_results_df["U"] == 0) & (test_results_df['T_pred'] >= test_results_df["T"]))
                 accuracy = round(test_results_df["Accurate"].mean()*100,3)
             return test_results_df, mae, accuracy
     
@@ -270,15 +310,21 @@ class t2e:
             return np.nan
         
     def __time_features(self,case):
+        case_length = len(case)
         first_index = case.index[0]
         last_index  = case.index[-1]
         if case.iloc[0].loc["U"] == 1:
             endtime = case["CompleteTimestamp"][last_index]
         else:
-            case.drop(last_index,axis=0,inplace=True)
-            last_index   = case.index[-1]
+            # possible cuts
+            x = np.arange(1,case_length-self.prefix)
+            # choose a cut
+            random_censor = np.random.choice(x, 1)[0]
+            for _ in range(random_censor):
+                case.drop(last_index,axis=0,inplace=True)
+                last_index   = case.index[-1]
             endtime = case["CompleteTimestamp"][last_index]
-
+            # print('Case:',case.iloc[0].loc["CaseID"],'\toriginal_length:',case_length, 'possible_cuts:',x, '\trandom censor:', random_censor)
         starttime = case["CompleteTimestamp"][first_index]
         case["fvt1"] = case["CompleteTimestamp"].diff(periods=1).dt.total_seconds()
         case["fvt2"] = case["CompleteTimestamp"].dt.hour
@@ -299,21 +345,21 @@ class t2e:
     def __extract_X(self, df):
         feature_idx = np.concatenate(\
                    np.where(df.columns.str.contains('ActivityID_')) + \
-                   np.where(df.columns.str.contains('weekday_')) + \
+#                    np.where(df.columns.str.contains('weekday_')) + \
                    np.where(df.columns.str.contains('fvt'))
                   )
         x = []
-        if len(df) < self.suffix:
+        if len(df) < self.prefix:
             x.append(
                 np.concatenate(
-                    (np.full((self.suffix - df.shape[0] , len(feature_idx)),fill_value=0), 
-                     df.values[0:self.suffix,feature_idx]), 
+                    (np.full((self.prefix - df.shape[0] , len(feature_idx)),fill_value=0), 
+                     df.values[0:self.prefix,feature_idx]), 
                      axis=0))
         else:
-            x.append(df.values[0:self.suffix,feature_idx])
+            x.append(df.values[0:self.prefix,feature_idx])
 
         x = np.hstack(np.array(x)).flatten()
-        x = x.reshape((self.suffix, len(feature_idx)))
+        x = x.reshape((self.prefix, len(feature_idx)))
 
         return(x)
 
@@ -329,10 +375,10 @@ class t2e:
             print("Defualt option chosen ==> daily")
             time_idx = np.where(df.columns.str.contains("D2E"))[0]
 
-        if len(df) <= self.suffix: 
+        if len(df) <= self.prefix: 
              y.append(df.values[-1,time_idx])
         else:
-             y.append(df.values[self.suffix-1,time_idx])
+             y.append(df.values[self.prefix-1,time_idx])
         y.append(df.loc[0,"U"])
         y = np.hstack(np.array(y)).flatten()
         y.reshape((1, 2))
@@ -448,56 +494,56 @@ class t2e:
 #     return(x)
 # ##########################################################################################################################
 # ##########################################################################################################################
-# def weibull_pdf(alpha, beta, t):
-#     return (beta/alpha) * ((t+1e-35)/alpha)**(beta-1)*np.exp(- ((t+1e-35)/alpha)**beta)
+def weibull_pdf(alpha, beta, t):
+    return (beta/alpha) * ((t+1e-35)/alpha)**(beta-1)*np.exp(- ((t+1e-35)/alpha)**beta)
 
-# def weibull_median(alpha, beta):
-#     return alpha*(-np.log(.5))**(1/beta)
+def weibull_median(alpha, beta):
+    return alpha*(-np.log(.5))**(1/beta)
 
-# def weibull_mean(alpha, beta):
-#     return alpha * math.gamma(1 + 1/beta)
+def weibull_mean(alpha, beta):
+    return alpha * math.gamma(1 + 1/beta)
 
-# def weibull_mode(alpha, beta):
-#     if beta < 1:
-#         return 0
-#     return alpha * ((beta-1)/beta)**(1/beta)
+def weibull_mode(alpha, beta):
+    if beta < 1:
+        return 0
+    return alpha * ((beta-1)/beta)**(1/beta)
 ##########################################################################################################################
 ##########################################################################################################################
-# def plot_predictions_insights(results_df):
+def plot_predictions_insights(results_df):
 
-#     plt.figure(figsize=(12,8))
-#     t=np.arange(0,300)
+    plt.figure(figsize=(12,8))
+    t=np.arange(0,300)
     
-#     plt.subplot(2,2,1)
-#     observed = results_df.loc[results_df['U'] == 1]
-#     sns.scatterplot(observed['T'], observed["predicted_mode"],hue=observed["Accurate"])
-#     plt.xlabel("Actual failure time",fontsize=12)
-#     plt.ylabel("Predicted failure time",fontsize=12)
-#     plt.title('Actual Vs. Predicted (Observed)',fontsize=18)
-#     plt.legend(loc = 'upper left')
+    plt.subplot(2,2,1)
+    observed = results_df.loc[results_df['U'] == 1]
+    sns.scatterplot(observed['T'], observed["T_pred"],hue=observed["Accurate"])
+    plt.xlabel("Actual failure time",fontsize=12)
+    plt.ylabel("Predicted failure time",fontsize=12)
+    plt.title('Actual Vs. Predicted (Observed)',fontsize=18)
+    plt.legend(loc = 'upper left')
     
-#     plt.subplot(2,2,2)
-#     censored = results_df.loc[results_df['U'] == 0]
-#     sns.scatterplot(censored['T'], censored["predicted_mode"],hue=censored["Accurate"])
-#     plt.xlabel("Time of observation",fontsize=12)
-#     plt.ylabel("Predicted failure time",fontsize=12)
-#     plt.title('Actual Vs. Predicted (Censored)',fontsize=18)
-#     plt.legend(loc = 'upper left')
+    plt.subplot(2,2,2)
+    censored = results_df.loc[results_df['U'] == 0]
+    sns.scatterplot(censored['T'], censored["T_pred"],hue=censored["Accurate"])
+    plt.xlabel("Time of observation",fontsize=12)
+    plt.ylabel("Predicted failure time",fontsize=12)
+    plt.title('Actual Vs. Predicted (Censored)',fontsize=18)
+    plt.legend(loc = 'upper left')
         
-#     plt.subplot(2,2,(3,4))
-#     sns.distplot(results_df['error (days)'], bins=100, kde=True,hist=True, norm_hist=False, label="Error Rate")
-#     plt.title('Error distribution',fontsize=18)
-#     plt.legend(loc = 'upper left')
-#     plt.xlabel("Error Shift",fontsize=12)
+    plt.subplot(2,2,(3,4))
+    sns.distplot(results_df['error (days)'], bins=100, kde=True,hist=True, norm_hist=False, label="Error Rate")
+    plt.title('Error distribution',fontsize=18)
+    plt.legend(loc = 'upper left')
+    plt.xlabel("Error Shift",fontsize=12)
 
-# #     plt.subplot(3,2,(5,6))
-# #     x = results_df.groupby(["T","U"]).agg({"Accurate":"mean"}).reset_index()
-# #     x["Error_Rate"] = 1-x["Accurate"]
-# #     sns.barplot(x= x["T"].astype("int"), y=x["Error_Rate"], hue=x["U"])
-# #     plt.title('Error rate per time step')
+#     plt.subplot(3,2,(5,6))
+#     x = results_df.groupby(["T","U"]).agg({"Accurate":"mean"}).reset_index()
+#     x["Error_Rate"] = 1-x["Accurate"]
+#     sns.barplot(x= x["T"].astype("int"), y=x["Error_Rate"], hue=x["U"])
+#     plt.title('Error rate per time step')
     
-#     plt.tight_layout()
-#     plt.show()
+    plt.tight_layout()
+    plt.show()
     
     
 # ##########################################################################################################################
@@ -516,7 +562,7 @@ class t2e:
 #         U    = result_df.loc[i,'U']
 #         alpha= result_df.loc[i,'alpha']
 #         beta = result_df.loc[i,'beta']
-#         mode = result_df.loc[i,'predicted_mode']
+#         mode = result_df.loc[i,'T_pred']
 
 #         y_max_1 = weibull_pdf(alpha, beta, mode)    
 #         y_max_2 = weibull_pdf(alpha, beta, T)    
