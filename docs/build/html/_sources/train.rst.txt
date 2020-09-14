@@ -1,7 +1,7 @@
-t2e module
-==========
+train module
+============
 
-.. automodule:: t2e
+.. automodule:: train
    :members:
    :undoc-members:
    :show-inheritance:

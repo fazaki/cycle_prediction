@@ -14,7 +14,6 @@ import os
 import sys
 sys.path.insert(0, os.path.abspath('../..'))
 
-
 # -- Project information -----------------------------------------------------
 
 project = 'Remaining Cycle Time Prediction'
@@ -56,6 +55,7 @@ html_theme = 'sphinx_rtd_theme'
 # so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ['_static']
 autodoc_member_order = 'bysource'
+
 
 def setup(app):
     app.add_css_file("css/custom.css")

@@ -5,17 +5,15 @@
 
 Welcome to Remaining Cycle Time Prediction's documentation!
 ===========================================================
+    
+- t2e:
+
+    - Preprocess trace dataset
+    - model fitting
+    - Prediction
+    - Evaluation
 
 .. toctree::
    :maxdepth: 2
-   :caption: Contents:
 
-   t2e.rst
-
-
-Indices and tables
-==================
-
-* :ref:`genindex`
-* :ref:`modindex`
-* :ref:`search`
+   api/main
