@@ -1,12 +1,12 @@
 import os
-from cycle_prediction import t2e
+from cycle_prediction.t2e import t2e
 from cycle_prediction.weibull_utils import check_dir
 import pandas as pd
 import pickle
 import warnings
 warnings.filterwarnings("ignore")
 
-path = '../data/'
+path = 'data/'
 check_dir(path)
 
 a = os.path.join(path, 'helpdesk.csv')
@@ -60,7 +60,7 @@ def grid_search(dataset, res, censored, cen_per, fit_type, transform):
             fit_type=fit_type,
             transform=transform
         )
-        t2e_obj.preprocess()
+        t2e_obj.preprocess_dev()
         X_train, X_test, X_val, y_train, y_test, y_val,\
             len_train, len_val, len_test = t2e_obj.smart_split(
                                                             train_prc=0.7,
@@ -86,43 +86,43 @@ def grid_search(dataset, res, censored, cen_per, fit_type, transform):
 def main():
     for dataset in ['a', 'b', 'c', 'd']:
 
-        #   Experiment #1: T2E Un-censored No transformation
-        for cen_prc in [0]:
+    #     #   Experiment #1: T2E Un-censored No transformation
+    #     for cen_prc in [0]:
 
-            mae_path = 'output/maes/t2e/'+str(cen_prc) + '/'
-            check_dir(mae_path)
-            print('### Censored percentage:', cen_prc/100.0)
-            grid_results = grid_search(
-                                dataset=dataset,
-                                res='s',
-                                censored=False,
-                                cen_per=cen_prc/100.0,
-                                fit_type='t2e',
-                                transform=False
-                        )
-            pickle.dump(grid_results, open(mae_path + 't2e_'
-                                           + dataset + '_GRU.pkl', 'wb'))
+    #         mae_path = 'output/maes/t2e/'+str(cen_prc) + '/'
+    #         check_dir(mae_path)
+    #         print('### Censored percentage:', cen_prc/100.0)
+    #         grid_results = grid_search(
+    #                             dataset=dataset,
+    #                             res='s',
+    #                             censored=False,
+    #                             cen_per=cen_prc/100.0,
+    #                             fit_type='t2e',
+    #                             transform=False
+    #                     )
+    #         pickle.dump(grid_results, open(mae_path + 't2e_'
+    #                                        + dataset + '_GRU.pkl', 'wb'))
 
-    #    Experiment #2: T2E Un-censored transform
-        for cen_prc in [0]:
+    # #    Experiment #2: T2E Un-censored transform
+    #     for cen_prc in [0]:
 
-            mae_path = 'output_files/maes/t2e_transform/'+str(cen_prc) + '/'
-            check_dir(mae_path)
-            print('### Censored percentage:', cen_prc/100.0)
-            grid_results = grid_search(
-                                dataset=dataset,
-                                res='s',
-                                censored=False,
-                                cen_per=cen_prc/100.0,
-                                fit_type='t2e',
-                                transform=True
-                        )
-            pickle.dump(grid_results, open(mae_path + 't2e_'
-                                           + dataset + '_GRU.pkl', 'wb'))
+    #         mae_path = 'output/maes/t2e_transform/'+str(cen_prc) + '/'
+    #         check_dir(mae_path)
+    #         print('### Censored percentage:', cen_prc/100.0)
+    #         grid_results = grid_search(
+    #                             dataset=dataset,
+    #                             res='s',
+    #                             censored=False,
+    #                             cen_per=cen_prc/100.0,
+    #                             fit_type='t2e',
+    #                             transform=True
+    #                     )
+    #         pickle.dump(grid_results, open(mae_path + 't2e_'
+    #                                        + dataset + '_GRU.pkl', 'wb'))
 
         #    Experiment #3: T2E Censored transform
-        for cen_prc in [60]:
-            mae_path = 'output_files/maes/t2e_transform/'+str(cen_prc) + '/'
+        for cen_prc in [50]:
+            mae_path = 'output/maes/t2e_transform/'+str(cen_prc) + '/'
             check_dir(mae_path)
 
             print('### Censored percentage:', cen_prc/100.0)
