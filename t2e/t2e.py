@@ -1,38 +1,39 @@
-from tensorflow.keras.layers import Dense, LSTM, GRU, Activation, Masking, BatchNormalization, Lambda, Input
-from tensorflow.keras.optimizers import RMSprop, Adam, Nadam
-from tensorflow.keras.models import load_model, Model
-from weibull_utils import weibull_pdf, weibull_median, weibull_mean, weibull_mode
-import time
-from sklearn.metrics import mean_absolute_error
-from sklearn.preprocessing import StandardScaler
-from wtte.wtte import WeightWatcher
-import wtte.wtte as wtte
-import wtte.weibull as weibull
-from tensorflow.keras.callbacks import History, EarlyStopping, ModelCheckpoint, CSVLogger, ReduceLROnPlateau
-from tensorflow.keras import callbacks
-from tensorflow.keras import backend as K
-import tensorflow as tf
-from six.moves import xrange
-from math import ceil
-import math
-import seaborn as sns
-from matplotlib.gridspec import GridSpec
-import matplotlib.ticker as ticker
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
+import time
+import math
+from math import ceil
+from collections import Counter
+import tensorflow as tf
+from tensorflow.keras.layers import Dense, LSTM, GRU
+from tensorflow.keras.layers import BatchNormalization, Lambda, Input
+from tensorflow.keras.optimizers import Nadam  # , RMSprop, Adam, Nadam
+from tensorflow.keras.models import Model
+from t2e.weibull_utils import weibull_mode, check_dir  # weibull_pdf
+from sklearn.metrics import mean_absolute_error
+from sklearn.preprocessing import StandardScaler
+import wtte.wtte as wtte
+from tensorflow.keras.callbacks import History, CSVLogger
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
+
+# from matplotlib.gridspec import GridSpec
+# import matplotlib.ticker as ticker
+# import matplotlib.dates as mdates
+# import matplotlib.pyplot as plt
+
+
 sd = 100
 np.random.seed(sd)
 tf.random.set_seed(sd)
-##########################################################################################################################
-##########################################################################################################################
+
+#################################################
+#################################################
 
 
 class t2e:
     """A class for time to event data preprocessing, fitting and evaluation.
     Deals with datasets with the following format:
-    
+
     +--------------------+-----------+--------------------------+
     | Column             | Data type | Content                  |
     +====================+===========+==========================+
@@ -42,20 +43,35 @@ class t2e:
     +--------------------+-----------+--------------------------+
     | CompleteTimestamp  | datetime  | Timestamp of the event   |
     +--------------------+-----------+--------------------------+
-    
+
     """
 
-    def __init__(self, dataset, prefix, resolution, censored, cen_prc, fit_type='t2e', transform=False):
+    def __init__(
+        self,
+        dataset,
+        prefix,
+        resolution,
+        censored,
+        cen_prc,
+        end_event_list=[],
+        transform=False,
+        fit_type='t2e',
+    ):
         """Initializes the t2e object with the desired setup.
 
         Args:
             dataset (obj): Dataframe of the trace dataset in the form of:
             prefix (int): Number of history prefixes to train with.
-            resolution (str): remaining time resolution {'s': 'seconds', 'h':'hours', 'd':'days'}
+            resolution (str): remaining time resolution
+                {'s': 'seconds', 'h':'hours', 'd':'days'}
             censored (bool): Whether to randomely censor some traces.
-            cen_prc (float): 0.0 -> 1.0, represents the percentage of censored traces to generate.
+            cen_prc (float): 0.0 -> 1.0, represents the percentage of
+                censored traces to generate.
+            end_event_list (obj): list of (int) containing the process's
+                possible end events
             fit_type (str): t2e (default) => for furture development.
-            transform (bool): Transform the output to a new space where it is less biased toward short traces.
+            transform (bool): Transform the output to a new space where
+                it is less biased toward short traces.
 
         """
         self.dataset = dataset
@@ -64,7 +80,10 @@ class t2e:
         self.cen_prc = cen_prc
         self.censored_cases = []
         self.all_cases = []
+        self.len_censored = 0
+        self.len_observed = 0
         self.batch_size = 128
+        self.end_event_list = end_event_list
         self.resolution = resolution
         self.transform = transform
         self.root = 1
@@ -77,40 +96,141 @@ class t2e:
         self.fit_time = 0
 
     def preprocess(self):
-        """  
-        - Feature engineering 
+        """Preprocess the dataframe in the format below
+        Args:
+            end_events (obj): list contains the end event(s)
+
+        Expects a dataframe with the following columns:
+        +--------------------+-----------+------------------------------+
+        | Column             | Data type | Content                      |
+        +====================+===========+==============================+
+        | CaseID             | int       | Case identifier              |
+        +--------------------+-----------+------------------------------+
+        | ActivityID         | int       | Activity identifier          |
+        +--------------------+-----------+------------------------------+
+        | CompleteTimestamp  | datetime  | Timestamp of the event       |
+        +--------------------+-----------+------------------------------+
+
+        Returns:
+            :obj:`self`: updated self.dataset to a pandas dataframe with the
+                following format:
+
+            +--------------------+-----------+-------------------------------+
+            | Column             | Data type | Content                       |
+            +====================+===========+===============================+
+            | CaseID             | int       | Case identifier               |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID         | int       | Activity identifier           |
+            +--------------------+-----------+-------------------------------+
+            | CompleteTimestamp  | datetime  | Timestamp of the event        |
+            +--------------------+-----------+-------------------------------+
+            | fvt1               | float     | delta time to the next event  |
+            +--------------------+-----------+-------------------------------+
+            | fvt2               | float     | hour since day start          |
+            +--------------------+-----------+-------------------------------+
+            | fvt3               | float     | hour since week start         |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID_1       | int       | Activity in one-hot form      |
+            +--------------------+-----------+-------------------------------+
+            | ...                | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID_n       | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | U                  | int       | 0/1 : censored/observed trace |
+            +--------------------+-----------+-------------------------------+
+            | T2E/D2E/S2E        | float     | Remaining time in seconds,    |
+            |                    |           |  hours or days                |
+            +--------------------+-----------+-------------------------------+
+
+        """
+        # Retrieve all sequences with their records count
+        self.dataset.sort_values(
+            ["CaseID", "CompleteTimestamp"], ascending=True)
+        case_counts = self.dataset.groupby(["CaseID"]).count()
+
+        # Only keep sequences that has at least prefix + 1 records
+        to_drop = list(
+            case_counts.loc[case_counts["ActivityID"] <= self.prefix].index)
+        self.dataset = self.dataset.loc[~self.dataset["CaseID"].isin(
+            to_drop)].reset_index(drop=True)
+        # Store all cases length
+        self.all_cases = self.dataset["CaseID"].unique()
+        print('all cases', len(self.all_cases))
+        # Create censored identifier based on end_event_list
+        cen_dict = self.dataset.drop_duplicates('CaseID', keep='last')[
+                            ['CaseID', 'ActivityID']]\
+                       .set_index('CaseID')\
+                       .to_dict()['ActivityID']
+        for k, v in cen_dict.items():
+            if v in self.end_event_list:
+                cen_dict[k] = 1
+            else:
+                cen_dict[k] = 0
+        # Assign the censorship state
+        self.dataset['U'] = self.dataset['CaseID'].map(cen_dict)
+        self.censored_cases = list(
+            np.unique(self.dataset['CaseID']
+                          .loc[self.dataset['U'] == 0]
+                          .values))
+        # process time features
+        self.dataset.CompleteTimestamp = pd.to_datetime(
+            self.dataset.CompleteTimestamp)
+        self.dataset = self.dataset.groupby("CaseID").apply(
+            lambda case: self.__time_features(case))
+        self.dataset.fvt1.fillna(0, inplace=True)
+        # process activity features
+        dummy = pd.get_dummies(
+            self.dataset["ActivityID"], prefix="ActivityID", drop_first=True)
+        self.dataset = pd.concat([self.dataset, dummy], axis=1)
+        last_step = self.dataset.drop_duplicates(
+            subset=["CaseID"], keep='last')["ActivityID"].index
+        self.dataset = self.dataset.drop(
+            last_step, axis=0).reset_index(drop=True)
+        # drop useless columns
+        self.dataset = self.dataset.drop(
+            ['CompleteTimestamp', 'T2E'], axis=1)
+        # Set counts
+        val_counts = Counter(cen_dict.values())
+        self.len_censored = val_counts[0]
+        self.len_observed = val_counts[1]
+
+    def preprocess_dev(self):
+        """This method is designed for developing purpose only:
+        - Feature engineering
         - One-hot-encoding
         - Censored traces generation
-        
+
         Returns:
-            :obj:`self`: updated self.dataset to a pandas dataframe with the following format:
-            
-            +--------------------+-----------+---------------------------------------+
-            | Column             | Data type | Content                               |
-            +====================+===========+=======================================+
-            | CaseID             | int       | Case identifier                       |
-            +--------------------+-----------+---------------------------------------+
-            | ActivityID         | int       | Activity identifier                   |
-            +--------------------+-----------+---------------------------------------+
-            | CompleteTimestamp  | datetime  | Timestamp of the event                |
-            +--------------------+-----------+---------------------------------------+
-            | fvt1               | float     | delta time to the next event          |
-            +--------------------+-----------+---------------------------------------+
-            | fvt2               | float     | hour since the beginning of the day   |
-            +--------------------+-----------+---------------------------------------+
-            | fvt3               | float     | hour since the beginning of the week  |
-            +--------------------+-----------+---------------------------------------+
-            | ActivityID_1       | int       | Activity in one-hot representation    |
-            +--------------------+-----------+---------------------------------------+
-            | ...                | ...       | ...                                   |
-            +--------------------+-----------+---------------------------------------+
-            | ActivityID_n       | int       | Activity in one-hot representation    |
-            +--------------------+-----------+---------------------------------------+
-            | U                  | int       | 0/1 : censored/observed trace         |
-            +--------------------+-----------+---------------------------------------+
-            | T2E/D2E/S2E        | float     | Remaining time in sec. or hrs. or days|
-            +--------------------+-----------+---------------------------------------+  
-        
+            :obj:`self`: updated self.dataset to a pandas dataframe with the
+                following format:
+
+            +--------------------+-----------+-------------------------------+
+            | Column             | Data type | Content                       |
+            +====================+===========+===============================+
+            | CaseID             | int       | Case identifier               |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID         | int       | Activity identifier           |
+            +--------------------+-----------+-------------------------------+
+            | CompleteTimestamp  | datetime  | Timestamp of the event        |
+            +--------------------+-----------+-------------------------------+
+            | fvt1               | float     | delta time to the next event  |
+            +--------------------+-----------+-------------------------------+
+            | fvt2               | float     | hour since day start          |
+            +--------------------+-----------+-------------------------------+
+            | fvt3               | float     | hour since week start         |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID_1       | int       | Activity in one-hot form      |
+            +--------------------+-----------+-------------------------------+
+            | ...                | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | ActivityID_n       | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | U                  | int       | 0/1 : censored/observed trace |
+            +--------------------+-----------+-------------------------------+
+            | T2E/D2E/S2E        | float     | Remaining time in seconds,    |
+            |                    |           |  hours or days                |
+            +--------------------+-----------+-------------------------------+
+
         """
         # Retrieve all sequences with their records count
         self.dataset.sort_values(
@@ -125,14 +245,17 @@ class t2e:
         self.all_cases = self.dataset["CaseID"].unique()
         print('all cases', len(self.all_cases))
         # Generate censored data:
-        to_censor_from = list(self.dataset.groupby(["CaseID"]).count(
-        ).loc[case_counts["ActivityID"] > self.prefix+1].index)
+        to_censor_from = list(
+            self.dataset
+                .groupby(["CaseID"])
+                .count()
+                .loc[case_counts["ActivityID"] > self.prefix+1].index
+                )
         try:
             np.random.seed(sd)
             self.censored_cases = np.random.choice(to_censor_from, int(
                 len(self.all_cases)*self.cen_prc), replace=False)
-
-        except:
+        except Exception:
             self.censored_cases = np.array(to_censor_from)
 
         print("first 10 censored cases", self.censored_cases[0:10])
@@ -141,13 +264,13 @@ class t2e:
         self.dataset.CompleteTimestamp = pd.to_datetime(
             self.dataset.CompleteTimestamp)
         self.dataset = self.dataset.groupby("CaseID").apply(
-            lambda case: self.__time_features(case))
+            lambda case: self.__time_features_dev(case))
         self.dataset.fvt1.fillna(0, inplace=True)
         dummy = pd.get_dummies(
             self.dataset["ActivityID"], prefix="ActivityID", drop_first=True)
         self.dataset = pd.concat([self.dataset, dummy], axis=1)
-        last_step = self.dataset.drop_duplicates(subset=["CaseID"], keep='last')[
-            "ActivityID"].index
+        last_step = self.dataset.drop_duplicates(
+            subset=["CaseID"], keep='last')["ActivityID"].index
         self.dataset = self.dataset.drop(
             last_step, axis=0).reset_index(drop=True)
 
@@ -155,7 +278,7 @@ class t2e:
         """Spliting the dataset to train, validation and test sets.
 
         The data nature requires a special function for this purpose
-        
+
         Args:
             train_prc (float): Training percentage (include validation).
             val_prc (str): Validation percentage (% of the training set).
@@ -163,24 +286,24 @@ class t2e:
 
         Returns:
             X_train (object): tensor of shape [n_examples, prefix, n_features]
-            
+
             X_test (object): tensor of shape [n_examples, prefix, n_features]
-            
+
             X_val (object): tensor of shape [n_examples, prefix, n_features]
-            
+
             y_train (object): tensor of shape [n_examples, 2]
-            
+
             y_test (object): tensor of shape [n_examples, 2]
-            
+
             y_val (object): tensor of shape [n_examples, 2]
-            
+
             train_cases (int): Count of training traces
-            
+
             val_cases (int): Count of validation traces
-            
+
             test_cases (int): Count of testing traces
 
-        """    
+        """
         all_cases = set(self.dataset.CaseID.unique())
         censored = set(self.censored_cases)
         observed = list(all_cases.difference(censored))
@@ -219,33 +342,40 @@ class t2e:
         X_val, y_val = self.__xy_split(df_val)
         X_test, y_test = self.__xy_split(df_test)
 
-        if self.regression == True:
-            return X_train, X_test, X_val, y_train[:, 0].reshape((-1, 1)), y_test[:, 0].reshape((-1, 1)), y_val[:, 0].reshape((-1, 1)), len(cases_train), len(cases_val), len(cases_test)
-        return X_train, X_test, X_val, y_train, y_test, y_val, len(cases_train), len(cases_val), len(cases_test)
+        if self.regression is True:
+            return X_train, X_test, X_val, y_train[:, 0].reshape((-1, 1)), \
+                y_test[:, 0].reshape((-1, 1)), y_val[:, 0].reshape((-1, 1)), \
+                len(cases_train), len(cases_val), len(cases_test)
+        return X_train, X_test, X_val, y_train, y_test, y_val, \
+            len(cases_train), len(cases_val), len(cases_test)
 
     def fit(self, X_train, y_train, X_val, y_val, size, vb=True):
         """Fitting a time to event model using a GRU network.
-        
+
         Args:
-            X_train (object): training set input features of shape [n_examples, prefix, n_features]
-            y_train (object): training set labels of shape [n_examples, n_features]
-            X_val (object): validation set input features of shape [n_examples, prefix, n_features]
+            X_train (object): training set input features of shape
+                [n_examples, prefix, n_features]
+            y_train (object): training set labels of shape
+                [n_examples, n_features]
+            X_val (object): validation set input features of shape
+                [n_examples, prefix, n_features]
             y_val (object): validation set labels [n_examples, n_features]
             size (int): GRU units size.
             vb (bool): verbose (true/False)
 
         Returns:
-            :obj:`self`: Updating self.model weights 
+            :obj:`self`: Updating self.model weights
 
         """
-        if self.transform == True:
+        if self.transform is True:
             self.root = 3
             self.root = 1/self.root
             self.power = 1/self.root
             y_train[:, 0] = y_train[:, 0]**self.root
             y_val[:, 0] = y_val[:, 0]**self.root
             print('Y_label has been transformed')
-        out_path = "../output_files/"
+        out_path = "output/"
+        check_dir(out_path)
         vb = vb
         if vb:
             print("\n")
@@ -259,8 +389,9 @@ class t2e:
                                separator=',', append=False)
         es = EarlyStopping(monitor=cri, mode='min', verbose=vb,
                            patience=15, restore_best_weights=False)
-        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri, mode='min',
-                             verbose=vb, save_best_only=True, save_weights_only=True)
+        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri,
+                             mode='min', verbose=vb, save_best_only=True,
+                             save_weights_only=True)
         n_features = X_train.shape[-1]
 
         np.random.seed(sd)
@@ -275,31 +406,33 @@ class t2e:
         l4 = Dense(2, name='Dense_1')(b2)
 
         output = Lambda(wtte.output_lambda, arguments={
-                        "init_alpha": init_alpha, "max_beta_value": 100, "scalefactor": 0.5})(l4)
+                        "init_alpha": init_alpha, "max_beta_value": 100,
+                        "scalefactor": 0.5})(l4)
         loss = wtte.loss(kind='continuous', reduce_loss=False).loss_function
         np.random.seed(sd)
         tf.random.set_seed(sd)
         self.model = Model(inputs=[main_input], outputs=[output])
         self.model.compile(loss=loss, optimizer=Nadam(
-            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
+            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08,
+            schedule_decay=0.004, clipvalue=3))
         mg_train = self.__batch_gen_train(X_train, y_train)
         mg_val = self.__batch_gen_train(X_val, y_val)
         start = time.time()
-        self.model.fit_generator(mg_train,
-                                 epochs=500,
-                                 steps_per_epoch=ceil(
-                                     len(X_train) / self.batch_size),
-                                 validation_data=(mg_val),
-                                 validation_steps=ceil(
-                                     len(X_val) / self.batch_size),
-                                 verbose=vb,
-                                 callbacks=[history, mc, es, csv_logger],
-                                 shuffle=False)
+        self.model.fit_generator(
+            mg_train,
+            epochs=500,
+            steps_per_epoch=ceil(len(X_train) / self.batch_size),
+            validation_data=(mg_val),
+            validation_steps=ceil(len(X_val) / self.batch_size),
+            verbose=vb,
+            callbacks=[history, mc, es, csv_logger],
+            shuffle=False
+            )
         try:
             self.model.load_weights(out_path + 'best_model.h5')
             print('model loaded successfully')
-        except:
-            self.model == None
+        except Exception:
+            self.model is None
 
         end = time.time()
         self.fit_time = np.round(end-start, 0)
@@ -307,7 +440,8 @@ class t2e:
 
     def fit_regression(self, X_train, y_train, X_val, y_val, size, vb=True):
 
-        out_path = "../output_files/"
+        out_path = "output/"
+        check_dir(out_path)
         vb = vb
         if vb:
             print("\n")
@@ -317,8 +451,9 @@ class t2e:
                                separator=',', append=False)
         es = EarlyStopping(monitor=cri, mode='min', verbose=vb,
                            patience=42, restore_best_weights=False)
-        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri, mode='min',
-                             verbose=vb, save_best_only=True, save_weights_only=True)
+        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri,
+                             mode='min', verbose=vb, save_best_only=True,
+                             save_weights_only=True)
         n_features = X_train.shape[-1]
 
         np.random.seed(sd)
@@ -335,7 +470,8 @@ class t2e:
         tf.random.set_seed(sd)
         self.model = Model(inputs=[main_input], outputs=[output])
         self.model.compile(loss={'output': 'mae'}, optimizer=Nadam(
-            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08, schedule_decay=0.004, clipvalue=3))
+            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08,
+            schedule_decay=0.004, clipvalue=3))
         mg_train = self.__batch_gen_train(X_train, y_train)
         mg_val = self.__batch_gen_train(X_val, y_val)
         start = time.time()
@@ -351,8 +487,8 @@ class t2e:
                                  shuffle=False)
         try:
             self.model.load_weights(out_path + 'best_model.h5')
-        except:
-            self.model == None
+        except Exception:
+            self.model is None
 
         end = time.time()
         self.fit_time = np.round(end-start, 0)
@@ -368,7 +504,7 @@ class t2e:
             y_pred (object): pandas dataframe with the shape [n_examples, 2]
 
         """
-        if self.model == None:
+        if self.model is None:
             return None
         else:
             mg_test = self.__batch_gen_test(X)
@@ -386,29 +522,30 @@ class t2e:
             mae (int): Mean absolute error of all predictions
             test_results_df: pandas dataframe with the following format
 
-            +--------------+-----------+---------------------------------------+
-            | Column       | Data type | Content                               |
-            +==============+===========+=======================================+
-            | T            | float     | True remaining time                   |
-            +--------------+-----------+---------------------------------------+
-            | U            | float     | Censored indicator                    |
-            +--------------+-----------+---------------------------------------+
-            | alpha        | float     | model prediction                      |
-            +--------------+-----------+---------------------------------------+
-            | beta         | float     | model prediction                      |
-            +--------------+-----------+---------------------------------------+
-            | T_pred       | float     | mode value of the generated pdf       |
-            +--------------+-----------+---------------------------------------+
-            | error (days) | float     | Error in days                         |
-            +--------------+-----------+---------------------------------------+
-            | MAE          | float     | Absolute error in days                |
-            +--------------+-----------+---------------------------------------+
-            | Accurate     | boolean   | Based on predfined threshold          |
-            +--------------+-----------+---------------------------------------+
+            +--------------+-----------+----------------------------------+
+            | Column       | Data type | Content                          |
+            +==============+===========+==================================+
+            | T            | float     | True remaining time              |
+            +--------------+-----------+----------------------------------+
+            | U            | float     | Censored indicator               |
+            +--------------+-----------+----------------------------------+
+            | alpha        | float     | model prediction                 |
+            +--------------+-----------+----------------------------------+
+            | beta         | float     | model prediction                 |
+            +--------------+-----------+----------------------------------+
+            | T_pred       | float     | mode value of the generated pdf  |
+            +--------------+-----------+----------------------------------+
+            | error (days) | float     | Error in days                    |
+            +--------------+-----------+----------------------------------+
+            | MAE          | float     | Absolute error in days           |
+            +--------------+-----------+----------------------------------+
+            | Accurate     | boolean   | Based on predfined threshold     |
+            +--------------+-----------+----------------------------------+
 
         """
-        # Make some predictions and put them alongside the real TTE and event indicator values
-        if self.model == None:
+        # Make some predictions and put them alongside the real TTE
+        # and event indicator values
+        if self.model is None:
             return np.nan, np.nan
         else:
             mg_test = self.__batch_gen_test(X)
@@ -416,16 +553,18 @@ class t2e:
                 mg_test, steps=ceil(len(X) / self.batch_size))
             test_result = np.concatenate((y, y_pred), axis=1)
 
-            if self.regression == True:
+            if self.regression is True:
                 test_results_df = pd.DataFrame(
                     test_result, columns=['T', 'T_pred'])
                 if self.resolution == 's':
                     test_results_df['error (days)'] = (
-                        test_results_df['T'] - test_results_df['T_pred']) / 86400
+                        test_results_df['T'] - test_results_df['T_pred'])\
+                            / 86400
                     test_results_df["MAE"] = np.absolute(
                         test_results_df["error (days)"])
                     mae = mean_absolute_error(
-                        test_results_df['T'], test_results_df['T_pred']) / 86400
+                        test_results_df['T'], test_results_df['T_pred'])\
+                        / 86400
                 elif self.resolution == 'h':
                     test_results_df['error (days)'] = (
                         test_results_df['T'] - test_results_df['T_pred']) / 24
@@ -443,21 +582,24 @@ class t2e:
                 test_results_df["Accurate"] = test_results_df["MAE"] <= 2
                 # accuracy = round(test_results_df["Accurate"].mean()*100,3)
 
-            if self.regression == False:
+            if self.regression is False:
                 test_results_df = pd.DataFrame(
                     test_result, columns=['T', 'U', 'alpha', 'beta'])
-                test_results_df['T_pred'] = test_results_df[['alpha', 'beta']].apply(
-                    lambda row: weibull_mode(row[0], row[1]), axis=1)
-                if self.transform == True:
-                    test_results_df['T_pred'] = test_results_df['T_pred']**self.power
+                test_results_df['T_pred'] = test_results_df[['alpha', 'beta']]\
+                    .apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
+                if self.transform is True:
+                    test_results_df['T_pred'] = test_results_df['T_pred']\
+                        ** self.power
                     print("Y_label is restored")
                 if self.resolution == 's':
                     test_results_df['error (days)'] = (
-                        test_results_df['T'] - test_results_df['T_pred']) / 86400
+                        test_results_df['T'] - test_results_df['T_pred'])\
+                            / 86400
                     test_results_df["MAE"] = np.absolute(
                         test_results_df["error (days)"])
                     mae = mean_absolute_error(
-                        test_results_df['T'], test_results_df['T_pred']) / 86400
+                        test_results_df['T'], test_results_df['T_pred'])\
+                        / 86400
                 elif self.resolution == 'h':
                     test_results_df['error (days)'] = (
                         test_results_df['T'] - test_results_df['T_pred']) / 24
@@ -472,19 +614,43 @@ class t2e:
                         test_results_df["error (days)"])
                     mae = mean_absolute_error(
                         test_results_df['T'], test_results_df['T_pred'])
-                test_results_df["Accurate"] = ((test_results_df["U"] == 1) & (test_results_df["MAE"] <= 2)) | \
-                                              ((test_results_df["U"] == 0) & (
-                                                  test_results_df['T_pred'] >= test_results_df["T"]))
+                test_results_df["Accurate"] =\
+                    ((test_results_df["U"] == 1) &
+                        (test_results_df["MAE"] <= 2))\
+                    | ((test_results_df["U"] == 0) &
+                        (test_results_df['T_pred'] >= test_results_df["T"]))
                 # accuracy = round(test_results_df["Accurate"].mean()*100,3)
             return test_results_df, mae
 
     def get_cen_prc(self):
         try:
             return len(self.censored_cases)/len(self.all_cases)
-        except:
+        except Exception:
             return np.nan
 
     def __time_features(self, case):
+        first_index = case.index[0]
+        last_index = case.index[-1]
+        endtime = case["CompleteTimestamp"][last_index]
+        starttime = case["CompleteTimestamp"][first_index]
+        case["fvt1"] = case["CompleteTimestamp"].diff(
+            periods=1).dt.total_seconds()
+        case["fvt2"] = case["CompleteTimestamp"].dt.hour
+        case["fvt3"] = (case["CompleteTimestamp"] -
+                        starttime).dt.total_seconds()
+        case["T2E"] = endtime - case["CompleteTimestamp"]
+        if self.resolution == 'd':
+            case["D2E"] = case["T2E"].dt.days
+        elif self.resolution == 's':
+            case["S2E"] = case["T2E"].dt.total_seconds()
+        elif self.resolution == 'h':
+            case["H2E"] = case["T2E"].dt.total_seconds()/3600
+        else:
+            raise ValueError("d: day, h:hours, s:seconds are allowed as\
+                time resolution")
+        return case
+
+    def __time_features_dev(self, case):
         case_length = len(case)
         first_index = case.index[0]
         last_index = case.index[-1]
@@ -492,14 +658,13 @@ class t2e:
             endtime = case["CompleteTimestamp"][last_index]
         else:
             # possible cuts
-            x = np.arange(1, case_length-self.prefix)
+            x = np.arange(1, case_length - self.prefix)
             # choose a cut
             random_censor = np.random.choice(x, 1)[0]
             for _ in range(random_censor):
                 case.drop(last_index, axis=0, inplace=True)
                 last_index = case.index[-1]
             endtime = case["CompleteTimestamp"][last_index]
-            # print('Case:',case.iloc[0].loc["CaseID"],'\toriginal_length:',case_length, 'possible_cuts:',x, '\trandom censor:', random_censor)
         starttime = case["CompleteTimestamp"][first_index]
         case["fvt1"] = case["CompleteTimestamp"].diff(
             periods=1).dt.total_seconds()
@@ -522,15 +687,15 @@ class t2e:
     def __extract_X(self, df):
         feature_idx = np.concatenate(
             np.where(df.columns.str.contains('ActivityID_')) + \
-            #                    np.where(df.columns.str.contains('weekday_')) + \
+            #  np.where(df.columns.str.contains('weekday_')) + \
             np.where(df.columns.str.contains('fvt'))
         )
         x = []
         if len(df) < self.prefix:
             x.append(
                 np.concatenate(
-                    (np.full((self.prefix - df.shape[0], len(feature_idx)), fill_value=0),
-                     df.values[0:self.prefix, feature_idx]),
+                    (np.full((self.prefix - df.shape[0], len(feature_idx)),
+                     fill_value=0), df.values[0:self.prefix, feature_idx]),
                     axis=0))
         else:
             x.append(df.values[0:self.prefix, feature_idx])

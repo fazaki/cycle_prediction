@@ -7,10 +7,10 @@ import os
 
 path = '../data/'
 
-a = os.path.join(path,'helpdesk.csv')
-b = os.path.join(path,'bpi_12_w.csv')
-c = os.path.join(path,'bpi_12_w_no_repeat.csv')
-d = os.path.join(path,'env_permit.csv')
+a = os.path.join(path, 'helpdesk.csv')
+b = os.path.join(path, 'bpi_12_w.csv')
+c = os.path.join(path, 'bpi_12_w_no_repeat.csv')
+d = os.path.join(path, 'env_permit.csv')
 
 a = pd.read_csv(a)
 b = pd.read_csv(b)
