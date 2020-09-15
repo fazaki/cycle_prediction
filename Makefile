@@ -50,6 +50,9 @@ docstring:
 	@cd docs && $(SPHINXBUILD) -M clean "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) && cd ..
 	@echo "### build docstring html ..."
 	@cd docs && $(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) && cd ..
+	@echo "### COPYING html files ..."
+	@cp -a docs/build/html/. docs/
+	@touch .nojeckyll
 
 
 # publish_docs:
