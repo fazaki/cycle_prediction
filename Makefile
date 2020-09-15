@@ -5,7 +5,7 @@ publish: publish_docs  # publish_examples
 test: tox  # tox
 upload: pypi
 install: pip_install
-all: style tox cleanup pywheel docstring
+all: style tox docstring cleanup pywheel pypi pip_install
 
 # publish requires to run below first. only user of mapcore and publish
 # ssh-copy-id -p 28222 mapcore@superai.jp.ao.ericsson.se
@@ -86,4 +86,4 @@ pypi:
 
 pip_install:
 	@echo "### pip install..."
-	@pip install $(PROJECTNAME)
+	@pip install -i https://test.pypi.org/simple/ $(PROJECTNAME)
