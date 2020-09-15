@@ -104,7 +104,6 @@ setuptools.setup(
         'pytest-docs==0.1.0',
         'python-dateutil==2.8.1',
         'pytz==2019.3',
-        'pywin32==227',
         'pywinpty==0.5.7',
         'PyYAML==5.3.1',
         'pyzmq==19.0.0',
