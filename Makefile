@@ -5,7 +5,7 @@ publish: publish_docs  # publish_examples
 test: tox  # tox
 upload: pypi
 install: pip_install
-all: style tox cleanup pywheel pypi
+all: style tox cleanup pywheel  # pypi
 
 # publish requires to run below first. only user of mapcore and publish
 # ssh-copy-id -p 28222 mapcore@superai.jp.ao.ericsson.se
@@ -80,8 +80,7 @@ docstring:
 # 	@echo "### fin publish..."
 
 pypi:
-	@echo "### move whl to testpypi ..."
-	# @twine upload --repository testpypi dist/*
+	@echo "### move whl to pypi ..."
 	@twine upload dist/*
 	@echo "### DONE !"
 

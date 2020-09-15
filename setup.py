@@ -1,5 +1,6 @@
 import setuptools
 
+
 with open("README.md", "r") as fh:
     long_description = fh.read()
 
@@ -136,7 +137,7 @@ setuptools.setup(
         'wrapt==1.12.1',
         'wtte==1.1.1',
         'zipp==3.1.0'
-    ],
+    ], 
     classifiers=[
         "Programming Language :: Python :: 3.7",
         "License :: OSI Approved :: MIT License",
