@@ -5,7 +5,7 @@ publish: publish_docs  # publish_examples
 test: tox  # tox
 upload: pypi
 install: pip_install
-all: tox cleanup pywheel
+all: style tox cleanup pywheel
 
 # publish requires to run below first. only user of mapcore and publish
 # ssh-copy-id -p 28222 mapcore@superai.jp.ao.ericsson.se
