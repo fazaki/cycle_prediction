@@ -22,4 +22,7 @@ jobs:
 
       # Runs a set of commands using the runners shell
       - name: Makefile
-        run: make all
+        run: |
+          echo "installing pycodestyle"
+          pip install pycodestyle pyflakes
+          make all
