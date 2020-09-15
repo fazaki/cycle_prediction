@@ -39,7 +39,7 @@ Linux:
 ## B) From source code
 
 #### 1. Cd to home dir
-cd ~
+    cd ~
 
 #### 2. Initialize a virtualenv that uses the Python 3.7 available at home directory
 	Virtualenv -p ~/python-3.7/bin/python3 PROJECTNAME
@@ -58,7 +58,7 @@ Linux:
     pip install -U pip ipykernel
 
 #### 5.  Clone the repo
-    git clone https://github.com/fazaki/time-to-event/tree/master`
+    git clone https://github.com/fazaki/time-to-event/tree/master
     cd time-to-event
 
 #### 6.  Install required dependencies: 

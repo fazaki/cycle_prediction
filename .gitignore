@@ -6,6 +6,7 @@
 *.swp
 *~
 
+
 # Unit test / coverage reports
 .coverage
 .cache
