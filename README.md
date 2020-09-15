@@ -11,10 +11,10 @@ we train a neural network to predict the probability density function of the rem
 
 
 #### 1. Cd to home dir
-cd ~
+    cd ~
 
 #### 2. Initialize a virtualenv that uses the Python 3.7 available at home directory
-Virtualenv -p ~/python-3.7/bin/python3 PROJECTNAME
+    virtualenv -p ~/python-3.7/bin/python3 PROJECTNAME
 
 #### 3. Activate the virtualenv
 
