@@ -1,7 +1,0 @@
-time_to_event
-=============
-
-.. toctree::
-   :maxdepth: 4
-
-   cycle_prediction

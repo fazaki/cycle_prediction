@@ -51,7 +51,7 @@ class t2e:
         dataset,
         prefix,
         resolution,
-        censored,
+        censored=False,
         cen_prc=0,
         end_event_list=[],
         transform=False,
@@ -65,6 +65,7 @@ class t2e:
             resolution (str): remaining time resolution
                 {'s': 'seconds', 'h':'hours', 'd':'days'}
             censored (bool): Whether to randomely censor some traces.
+                Used only for development (default:False)
             cen_prc (float): 0.0 -> 1.0, represents the percentage of
                 censored traces to generate (used ONLY for development)
             end_event_list (obj): list of (int) containing the process's
@@ -135,7 +136,7 @@ class t2e:
             | U                  | int       | 0/1 : censored/observed trace |
             +--------------------+-----------+-------------------------------+
             | T2E/D2E/S2E        | float     | Remaining time in seconds,    |
-            |                    |           |  hours or days                |
+            |                    |           | hours or days                 |
             +--------------------+-----------+-------------------------------+
 
         """
@@ -240,7 +241,7 @@ class t2e:
             | U                  | int       | 0/1 : censored/observed trace |
             +--------------------+-----------+-------------------------------+
             | T2E/D2E/S2E        | float     | Remaining time in seconds,    |
-            |                    |           |  hours or days                |
+            |                    |           | hours or days                 |
             +--------------------+-----------+-------------------------------+
 
         """
@@ -507,7 +508,8 @@ class t2e:
         return
 
     def predict(self, X):
-        """ A method to predict the alpha and beta parameters defining the weibull pdf
+        """ A method to predict the alpha and beta parameters\
+                defining the weibull pdf
 
         Args:
             X (object): Input array of [n_examples, prefix, n_features]

@@ -85,8 +85,7 @@
               <ul class="current">
 <li class="toctree-l1 current"><a class="reference internal" href="main.html">API Documentation</a><ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">cycle_prediction package</a><ul>
-<li class="toctree-l3"><a class="reference internal" href="#submodules">Submodules</a></li>
-<li class="toctree-l3"><a class="reference internal" href="#module-cycle_prediction.t2e">cycle_prediction.t2e module</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#module-cycle_prediction.t2e">cycle_prediction.t2e</a></li>
 </ul>
 </li>
 </ul>
@@ -160,14 +159,11 @@
             
   <div class="section" id="cycle-prediction-package">
 <h1>cycle_prediction package<a class="headerlink" href="#cycle-prediction-package" title="Permalink to this headline">¶</a></h1>
-<div class="section" id="submodules">
-<h2>Submodules<a class="headerlink" href="#submodules" title="Permalink to this headline">¶</a></h2>
-</div>
 <div class="section" id="module-cycle_prediction.t2e">
-<span id="cycle-prediction-t2e-module"></span><h2>cycle_prediction.t2e module<a class="headerlink" href="#module-cycle_prediction.t2e" title="Permalink to this headline">¶</a></h2>
+<span id="cycle-prediction-t2e"></span><h2>cycle_prediction.t2e<a class="headerlink" href="#module-cycle_prediction.t2e" title="Permalink to this headline">¶</a></h2>
 <dl class="py class">
 <dt id="cycle_prediction.t2e.t2e">
-<em class="property">class </em><code class="sig-prename descclassname">cycle_prediction.t2e.</code><code class="sig-name descname">t2e</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">dataset</span></em>, <em class="sig-param"><span class="n">prefix</span></em>, <em class="sig-param"><span class="n">resolution</span></em>, <em class="sig-param"><span class="n">censored</span></em>, <em class="sig-param"><span class="n">cen_prc</span><span class="o">=</span><span class="default_value">0</span></em>, <em class="sig-param"><span class="n">end_event_list</span><span class="o">=</span><span class="default_value">[]</span></em>, <em class="sig-param"><span class="n">transform</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">fit_type</span><span class="o">=</span><span class="default_value">'t2e'</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.t2e.t2e" title="Permalink to this definition">¶</a></dt>
+<em class="property">class </em><code class="sig-prename descclassname">cycle_prediction.t2e.</code><code class="sig-name descname">t2e</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">dataset</span></em>, <em class="sig-param"><span class="n">prefix</span></em>, <em class="sig-param"><span class="n">resolution</span></em>, <em class="sig-param"><span class="n">censored</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">cen_prc</span><span class="o">=</span><span class="default_value">0</span></em>, <em class="sig-param"><span class="n">end_event_list</span><span class="o">=</span><span class="default_value">[]</span></em>, <em class="sig-param"><span class="n">transform</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">fit_type</span><span class="o">=</span><span class="default_value">'t2e'</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.t2e.t2e" title="Permalink to this definition">¶</a></dt>
 <dd><p>Bases: <code class="xref py py-class docutils literal notranslate"><span class="pre">object</span></code></p>
 <p>A class for time to event data preprocessing, fitting and evaluation.
 Deals with datasets with the following format:</p>
@@ -200,7 +196,7 @@ Deals with datasets with the following format:</p>
 </table>
 <dl class="py method">
 <dt id="cycle_prediction.t2e.t2e.__init__">
-<code class="sig-name descname">__init__</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">dataset</span></em>, <em class="sig-param"><span class="n">prefix</span></em>, <em class="sig-param"><span class="n">resolution</span></em>, <em class="sig-param"><span class="n">censored</span></em>, <em class="sig-param"><span class="n">cen_prc</span><span class="o">=</span><span class="default_value">0</span></em>, <em class="sig-param"><span class="n">end_event_list</span><span class="o">=</span><span class="default_value">[]</span></em>, <em class="sig-param"><span class="n">transform</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">fit_type</span><span class="o">=</span><span class="default_value">'t2e'</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.t2e.t2e.__init__" title="Permalink to this definition">¶</a></dt>
+<code class="sig-name descname">__init__</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">dataset</span></em>, <em class="sig-param"><span class="n">prefix</span></em>, <em class="sig-param"><span class="n">resolution</span></em>, <em class="sig-param"><span class="n">censored</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">cen_prc</span><span class="o">=</span><span class="default_value">0</span></em>, <em class="sig-param"><span class="n">end_event_list</span><span class="o">=</span><span class="default_value">[]</span></em>, <em class="sig-param"><span class="n">transform</span><span class="o">=</span><span class="default_value">False</span></em>, <em class="sig-param"><span class="n">fit_type</span><span class="o">=</span><span class="default_value">'t2e'</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.t2e.t2e.__init__" title="Permalink to this definition">¶</a></dt>
 <dd><p>Initializes the t2e object with the desired setup.</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters</dt>
@@ -209,7 +205,8 @@ Deals with datasets with the following format:</p>
 <li><p><strong>prefix</strong> (<em>int</em>) – Number of history prefixes to train with.</p></li>
 <li><p><strong>resolution</strong> (<em>str</em>) – remaining time resolution
 {‘s’: ‘seconds’, ‘h’:’hours’, ‘d’:’days’}</p></li>
-<li><p><strong>censored</strong> (<em>bool</em>) – Whether to randomely censor some traces.</p></li>
+<li><p><strong>censored</strong> (<em>bool</em>) – Whether to randomely censor some traces.
+Used only for development (default:False)</p></li>
 <li><p><strong>cen_prc</strong> (<em>float</em>) – 0.0 -&gt; 1.0, represents the percentage of
 censored traces to generate (used ONLY for development)</p></li>
 <li><p><strong>end_event_list</strong> (<em>obj</em>) – list of (int) containing the process’s
@@ -300,11 +297,8 @@ it is less biased toward short traces.</p></li>
 </tr>
 <tr class="row-even"><td><p>T2E/D2E/S2E</p></td>
 <td><p>float</p></td>
-<td><dl class="simple">
-<dt>Remaining time in seconds,</dt><dd><p>hours or days</p>
-</dd>
-</dl>
-</td>
+<td><p>Remaining time in seconds,
+hours or days</p></td>
 </tr>
 </tbody>
 </table>
@@ -400,11 +394,8 @@ it is less biased toward short traces.</p></li>
 </tr>
 <tr class="row-even"><td><p>T2E/D2E/S2E</p></td>
 <td><p>float</p></td>
-<td><dl class="simple">
-<dt>Remaining time in seconds,</dt><dd><p>hours or days</p>
-</dd>
-</dl>
-</td>
+<td><p>Remaining time in seconds,
+hours or days</p></td>
 </tr>
 </tbody>
 </table>
@@ -477,7 +468,7 @@ it is less biased toward short traces.</p></li>
 <dl class="py method">
 <dt id="cycle_prediction.t2e.t2e.predict">
 <code class="sig-name descname">predict</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">X</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.t2e.t2e.predict" title="Permalink to this definition">¶</a></dt>
-<dd><p>A method to predict the alpha and beta parameters defining the weibull pdf</p>
+<dd><p>A method to predict the alpha and beta parameters                defining the weibull pdf</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters</dt>
 <dd class="field-odd"><p><strong>X</strong> (<em>object</em>) – Input array of [n_examples, prefix, n_features]</p>

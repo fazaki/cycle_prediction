@@ -1,11 +1,8 @@
 cycle\_prediction package
 =========================
 
-Submodules
-----------
-
-cycle\_prediction.t2e module
-----------------------------
+cycle\_prediction.t2e
+---------------------
 
 .. automodule:: cycle_prediction.t2e
 
