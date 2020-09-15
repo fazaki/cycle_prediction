@@ -20,6 +20,10 @@ jobs:
         with:
           python-version: '3.7' # Version range or exact version of a Python version to use, using SemVer's version range syntax
           architecture: 'x64' # optional x64 or x86. Defaults to x64 if not specified
+      - name: prerequisites
+        run: pip install flake8 pytest
+      - name: requirements
+        run: pip install -e .
       - name: Makefile
         run: |
           make all
