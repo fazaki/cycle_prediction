@@ -52,7 +52,7 @@ docstring:
 	@cd docs && $(SPHINXBUILD) -M html "$(SOURCEDIR)" "$(BUILDDIR)" $(SPHINXOPTS) && cd ..
 	@echo "### COPYING html files ..."
 	@cp -a docs/build/html/. docs/
-	@touch .nojeckyll
+	@touch docs/.nojeckyll
 
 
 # publish_docs:
