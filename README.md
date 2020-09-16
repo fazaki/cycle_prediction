@@ -5,9 +5,14 @@ Predicting the remaining cycle time of ongoing cases is one important use case o
 It is machine learning approach based on survival analysis that can learn from complete/ongoing traces.  
 we train a neural network to predict the probability density function of the remaining cycle time of a running case. 
 
-# Installation in a virtual environment:
+# Documentation:
 
-## A) From pip
+https://fazaki.github.io/time-to-event/
+
+
+# Getting started:
+
+## A) pip installation
 
 
 #### 1. Cd to home dir
@@ -27,16 +32,16 @@ Linux:
 	source ~/PROJECTNAME/bin/activate
 
 #### 4. Install below packages
-    pip install -i https://test.pypi.org/simple/ cycle-prediction`
+    pip install cycle-prediction
     
 #### 5. Create a new kernel with the same project name
-    pip install -U pip ipykernel`
+    pip install -U pip ipykernel
     ipython kernel install --user --name=PROJECTNAME
 
 #### 6. Use the example notebook
 
 
-## B) From source code
+## B) Source code installation:
 
 #### 1. Cd to home dir
     cd ~

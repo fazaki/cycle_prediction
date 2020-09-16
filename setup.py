@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="cycle_prediction",  # Replace with your own username
-    version="1.0.2",
+    version="1.0.3",
     author="Fadi Baskharon",
     author_email="nzfadi@gmail.com",
     description="A package to train and predict the end of a process from history logs",
