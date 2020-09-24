@@ -92,7 +92,7 @@ def main():
             pickle.dump(grid_results, open(mae_path + 't2e_'
                                            + dataset + '_GRU.pkl', 'wb'))
 
-        ## Experiment #2: T2E Un-censored transform
+        # Experiment #2: T2E Un-censored transform
         # for cen_prc in [0]:
 
         #     mae_path = 'output/maes/t2e_transform/'+str(cen_prc) + '/'
