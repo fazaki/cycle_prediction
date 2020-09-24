@@ -9,7 +9,7 @@ from tensorflow.keras.layers import Dense, LSTM, GRU
 from tensorflow.keras.layers import BatchNormalization, Lambda, Input
 from tensorflow.keras.optimizers import Nadam  # , RMSprop, Adam, Nadam
 from tensorflow.keras.models import Model
-from cycle_prediction.weibull_utils import weibull_mode, check_dir
+from cyclepred.weibull_utils import weibull_mode, check_dir
 from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 import wtte.wtte as wtte

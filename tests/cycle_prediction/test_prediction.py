@@ -1,6 +1,6 @@
 import os
-from cycle_prediction.t2e import t2e
-# from cycle_prediction.weibull_utils import check_dir
+from cyclepred.t2e import t2e
+# from cyclepred.weibull_utils import check_dir
 import pandas as pd
 import warnings
 warnings.filterwarnings("ignore")

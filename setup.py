@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="cycle_prediction",  # Replace with your own username
+    name="cyclepred",  # Replace with your own username
     version="1.0.4",
     author="Fadi Baskharon",
     author_email="nzfadi@gmail.com",
