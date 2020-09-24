@@ -32,7 +32,6 @@ setuptools.setup(
             'pylint==2.6.0',
             'twine>=3.2.0',
             'pytest==6.0.1',
-            'pytest-docs==0.1.0',
         ]
     },
     classifiers=[
