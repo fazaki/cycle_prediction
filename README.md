@@ -7,7 +7,7 @@ we train a neural network to predict the probability density function of the rem
 
 # Documentation:
 
-https://fazaki.github.io/time-to-event/
+https://fazaki.github.io/cycle_prediction/
 
 
 # Getting started:

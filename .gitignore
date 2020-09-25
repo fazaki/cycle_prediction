@@ -27,3 +27,4 @@ develop-eggs
 lib
 lib64
 __pycache__
+cycle_prediction/__pycache__
