@@ -16,9 +16,7 @@ setuptools.setup(
     url="https://github.com/fazaki/cycle_prediction/tree/master",
     packages=setuptools.find_packages(),
     install_requires=[
-        'tensorboard>=2.0.1',
         'tensorflow==2.0.1',
-        'tensorflow-estimator==2.0.1',
         'Keras==2.3.1',
         'Keras-Applications==1.0.8',
         'Keras-Preprocessing==1.1.0',
@@ -32,7 +30,6 @@ setuptools.setup(
     ],
     extras_require={
         "dev":[
-
             'pylint==2.6.0',
             'twine>=3.2.0',
             'pytest==6.0.1',
