@@ -49,7 +49,7 @@ def grid_search(dataset, res, censored, cen_per, fit_type, transform):
             fit_type=fit_type,
             transform=transform
         )
-        t2e_obj.preprocess()
+        t2e_obj.preprocess_dev()
         X_train, X_test, X_val, y_train, y_test, y_val,\
             len_train, len_val, len_test = t2e_obj.smart_split(
                                                             train_prc=0.7,
