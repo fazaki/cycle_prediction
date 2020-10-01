@@ -55,7 +55,7 @@ def plot_top_predictions(
     fig, axarr = plt.subplots(nrows=lim, ncols=2, figsize=(20, lim*4))
 
     max_time = max(
-        result_df.loc[:, 'T'].max(), 
+        result_df.loc[:, 'T'].max(),
         result_df.loc[:, 'T_pred'].max()
         )
     if max_time == 0:
