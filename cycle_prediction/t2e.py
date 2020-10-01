@@ -95,6 +95,7 @@ class t2e:
         else:
             self.regression = True
         self.fit_time = 0
+        self.sc = None
 
     def preprocess(self):
         """a method responsible of the creation of time and activity features.
@@ -156,7 +157,7 @@ class t2e:
             to_drop)].reset_index(drop=True)
         # Store all cases length
         self.all_cases = self.dataset["CaseID"].unique()
-        print('all cases', len(self.all_cases))
+        print('No. of cases', len(self.all_cases))
         # Create censored identifier based on end_event_list
         cen_dict = self.dataset.drop_duplicates('CaseID', keep='last')[
                             ['CaseID', 'ActivityID']]\
@@ -282,10 +283,37 @@ class t2e:
         dummy = pd.get_dummies(
             self.dataset["ActivityID"], prefix="ActivityID", drop_first=True)
         self.dataset = pd.concat([self.dataset, dummy], axis=1)
+        self.dataset.drop(['CompleteTimestamp', 'T2E'], axis=1, inplace=True)
         last_step = self.dataset.drop_duplicates(
             subset=["CaseID"], keep='last')["ActivityID"].index
         self.dataset = self.dataset.drop(
             last_step, axis=0).reset_index(drop=True)
+
+    def xy_split(self, scaling):
+        """Spliting the dataset into X_test [and y_test if available].
+
+        Used when testing new traces
+
+        Args:
+            scaling (bool): To scale numerical feature.
+            scaling_obj: fit object to scale the features.
+
+        Returns:
+
+            X_test (arr): tensor of shape [n_examples, prefix, n_features]
+            y_test (arr): tensor of shape [n_examples, 2]
+        """
+        df_test = self.dataset
+        if scaling:
+            if self.sc is None:
+                raise ValueError('scaling attribute is set to TRUE,\
+                    while self.sc == None')
+            df_test.loc[:, ["fvt1", "fvt2", "fvt3"]] = self.sc.transform(
+                df_test[["fvt1", "fvt2", "fvt3"]])
+
+        X_test, y_test = self.__xy_split(df_test)
+
+        return X_test, y_test
 
     def smart_split(self, train_prc, val_prc, scaling):
         """Spliting the dataset to train, validation and test sets.
@@ -350,6 +378,7 @@ class t2e:
                 df_val[["fvt1", "fvt2", "fvt3"]])
             df_test.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.transform(
                 df_test[["fvt1", "fvt2", "fvt3"]])
+            self.sc = sc
 
         X_train, y_train = self.__xy_split(df_train)
         X_val, y_val = self.__xy_split(df_val)
@@ -686,9 +715,12 @@ class t2e:
         case["fvt3"] = (case["CompleteTimestamp"] -
                         starttime).dt.total_seconds()
         case["T2E"] = endtime - case["CompleteTimestamp"]
-        case["D2E"] = case["T2E"].dt.days
-        case["S2E"] = case["T2E"].dt.total_seconds()
-        case["H2E"] = case["S2E"]/3600
+        if self.resolution == 'd':
+            case["D2E"] = case["T2E"].dt.days
+        elif self.resolution == 's':
+            case["S2E"] = case["T2E"].dt.total_seconds()
+        elif self.resolution == 'h':
+            case["H2E"] = case["T2E"].dt.total_seconds()/3600
         return case
 
     def __xy_split(self, data):

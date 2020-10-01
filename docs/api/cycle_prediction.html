@@ -86,6 +86,7 @@
 <li class="toctree-l1 current"><a class="reference internal" href="main.html">API Documentation</a><ul class="current">
 <li class="toctree-l2 current"><a class="current reference internal" href="#">cycle_prediction package</a><ul>
 <li class="toctree-l3"><a class="reference internal" href="#module-cycle_prediction.t2e">cycle_prediction.t2e</a></li>
+<li class="toctree-l3"><a class="reference internal" href="#module-cycle_prediction.weibull_utils">cycle_prediction.weibull_utils</a></li>
 </ul>
 </li>
 </ul>
@@ -545,6 +546,24 @@ test_results_df: pandas dataframe with the following format</p>
 </dl>
 </dd></dl>
 
+</dd></dl>
+
+</div>
+<div class="section" id="module-cycle_prediction.weibull_utils">
+<span id="cycle-prediction-weibull-utils"></span><h2>cycle_prediction.weibull_utils<a class="headerlink" href="#module-cycle_prediction.weibull_utils" title="Permalink to this headline">¶</a></h2>
+<dl class="py function">
+<dt id="cycle_prediction.weibull_utils.plot_top_predictions">
+<code class="sig-prename descclassname">cycle_prediction.weibull_utils.</code><code class="sig-name descname">plot_top_predictions</code><span class="sig-paren">(</span><em class="sig-param"><span class="n">result_df</span></em>, <em class="sig-param"><span class="n">lim</span><span class="o">=</span><span class="default_value">10</span></em>, <em class="sig-param"><span class="n">U</span><span class="o">=</span><span class="default_value">1</span></em><span class="sig-paren">)</span><a class="headerlink" href="#cycle_prediction.weibull_utils.plot_top_predictions" title="Permalink to this definition">¶</a></dt>
+<dd><p>Plot weibull pdf and survival curve for then remaining time.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters</dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>result_df</strong> – the result dataframe from the t2e.evaluate method</p></li>
+<li><p><strong>lim</strong> – limit to plot the best n predictions</p></li>
+<li><p><strong>U</strong> – 1:observed or 0:censored example to plot</p></li>
+</ul>
+</dd>
+</dl>
 </dd></dl>
 
 </div>

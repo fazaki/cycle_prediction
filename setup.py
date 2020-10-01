@@ -29,7 +29,7 @@ setuptools.setup(
         'wtte>=1.1.1',
     ],
     extras_require={
-        "dev":[
+        "dev": [
             'pylint==2.6.0',
             'twine>=3.2.0',
             'pytest==6.0.1',

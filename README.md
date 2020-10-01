@@ -1,6 +1,7 @@
 [![GitHub Actions](https://img.shields.io/endpoint.svg?url=https%3A%2F%2Factions-badge.atrox.dev%2Fatrox%2Fsync-dotenv%2Fbadge&label=build&logo=none)](https://actions-badge.atrox.dev/atrox/sync-dotenv/goto)
 
 # Predicting Remaining Cycle Time from Ongoing Case
+![alt text](docs/api/overview.png)
 Predicting the remaining cycle time of ongoing cases is one important use case of predictive process monitoring. 
 It is machine learning approach based on survival analysis that can learn from complete/ongoing traces.  
 we train a neural network to predict the probability density function of the remaining cycle time of a running case. 

@@ -12,3 +12,9 @@ cycle\_prediction.t2e
    :undoc-members:
    :show-inheritance:
 
+cycle\_prediction.weibull_utils
+-------------------------------
+
+.. automodule:: cycle_prediction.weibull_utils
+
+.. autofunction:: plot_top_predictions
