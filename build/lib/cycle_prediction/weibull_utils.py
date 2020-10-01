@@ -2,12 +2,17 @@ import os
 import numpy as np
 import math
 import matplotlib.pyplot as plt
+from matplotlib import ticker
 import seaborn as sns
 
 
 def weibull_pdf(alpha, beta, t):
     return (beta/alpha) *\
         ((t+1e-35)/alpha)**(beta-1)*np.exp(- ((t+1e-35)/alpha)**beta)
+
+
+def weibull_survival(alpha, beta, t):
+    return np.exp(-((t+1e-35) / alpha) ** beta)
 
 
 def weibull_median(alpha, beta):
@@ -23,57 +28,95 @@ def weibull_mode(alpha, beta):
         return 0
     return alpha * ((beta-1)/beta)**(1/beta)
 
-# def plot_top_predictions(
-    # result_df,
-    # lim=10,
-    # top_feature = "abs_error",
-    # ascending = True,
-    # U = 1,
-    # accurate = True
-    # ):
 
-#     result_df = result_df.loc[(result_df["Accurate"] == accurate) &\
-#       (result_df["U"] == U)]
-#     top_accurate = result_df.sort_values(by=top_feature,
-#                                           ascending = ascending)
-#                                          .head(lim).index
-#     result_df.sort_values(by=top_feature, ascending =\
-#       ascending).head(lim)
-#     fig, axarr = plt.subplots(len(top_accurate),
-#       figsize=(15,len(top_accurate)*3))
+def plot_top_predictions(
+        result_df,
+        lim=10,
+        U=1,
+):
+    """Plot weibull pdf and survival curve for then remaining time.
 
-#     for n,i in enumerate(top_accurate):
-#         ax = axarr[n]
-#         T    = result_df.loc[i,'T']
-#         U    = result_df.loc[i,'U']
-#         alpha= result_df.loc[i,'alpha']
-#         beta = result_df.loc[i,'beta']
-#         mode = result_df.loc[i,'T_pred']
+    Args:
+        result_df: the result dataframe from the t2e.evaluate method
+        lim: limit to plot the best n predictions
+        U: 1:observed or 0:censored example to plot
+    """
+    top_features = ['MAE', 'T_pred']
+    sorting_bool = [True, False]
+    result_df = result_df.loc[result_df["U"] == U]
+    result_df_noZero = result_df.loc[result_df["T"] != 0]
+    result_df_noZero = result_df_noZero.loc[result_df["T_pred"] != 0]
+    if len(result_df_noZero) != 0:
+        result_df = result_df_noZero
+    result_df = result_df.sort_values(by=top_features,
+                                      ascending=sorting_bool)\
+                         .reset_index(drop=True)\
+                         .head(lim)
+    fig, axarr = plt.subplots(nrows=lim, ncols=2, figsize=(20, lim*4))
 
-#         y_max_1 = weibull_pdf(alpha, beta, mode)
-#         y_max_2 = weibull_pdf(alpha, beta, T)
+    max_time = max(
+        result_df.loc[:, 'T'].max(),
+        result_df.loc[:, 'T_pred'].max()
+        )
+    if max_time == 0:
+        max_time = 15
+    elif max_time <= 15:
+        max_time = max_time*10
+    else:
+        max_time = max_time*5
+    for i in range(lim):
+        try:
+            ax = axarr[i][0]
+        except Exception:
+            ax = axarr[0]
+        T = result_df.loc[i, 'T']
 
-#         t=np.arange(0,20)
-#         ax.plot(t, weibull_pdf(alpha, beta, t), color='w',
-#           label="Weibull distribution")
-#         ax.vlines(mode, ymin=0, ymax=y_max_1, colors='k',
-#           linestyles='--', label="Predicted failure time")
-#         ax.scatter(T, weibull_pdf(alpha,beta, T), color='r',
-#           s=100, label="Actual failure time")
-#         ax.set_facecolor('#A0A0A0')
-#         ax.xaxis.grid(b=True, which="major", color='k',
-#           linestyle='-.', linewidth=0.1)
-#         ax.set_xticklabels(np.append(0, np.unique(t)))
-#         ax.set_xlim(left = 0)
-#         ax.set_ylim(bottom = 0)
-#         ax.xaxis.set_major_locator(ticker.MultipleLocator(1))
+        alpha = result_df.loc[i, 'alpha']
+        beta = result_df.loc[i, 'beta']
+        mode = result_df.loc[i, 'T_pred']
 
-#         if n == 0:
-#             ax.legend(frameon=True,fancybox=True,shadow=True,facecolor='lightgray')
-#             ax.set_title("Time-to-Failure distribution",pad =20,
-#               fontsize = 20)
-#     #plt.tight_layout()
-#     plt.show()
+        y_max_1 = weibull_pdf(alpha, beta, mode)
+        # y_max_2 = weibull_pdf(alpha, beta, T)
+        t = np.arange(0, max_time)
+        ax.plot(t, weibull_pdf(alpha, beta, t), color='gray',
+                label="Weibull distribution")
+        ax.vlines(mode, ymin=0, ymax=y_max_1, colors='k',
+                  linestyles='--', label="Predicted failure time")
+        ax.scatter(T, weibull_pdf(alpha, beta, T), color='g',
+                   s=100, label="Actual failure time")
+        ax.set_facecolor('lightgray')
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=-1, right=max_time)
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(7))
+
+        if i == 0:
+            ax.legend(frameon=True, fancybox=True, shadow=True,
+                      facecolor='w', fontsize=18)
+            ax.set_title("End time probability", pad=20,
+                         fontsize=20)
+        ###################
+        #  Survival plot  #
+        ###################
+        try:
+            ax = axarr[i][1]
+        except Exception:
+            ax = axarr[1]
+        t = np.arange(0, max_time)
+        ax.plot(t, weibull_survival(alpha, beta, t), color='gray',
+                label="Weibull survival curve")
+        ax.set_facecolor('lightgray')
+        ax.set_ylim(bottom=0)
+        ax.set_xlim(left=-1, right=max_time)
+        ax.xaxis.set_major_locator(ticker.MultipleLocator(7))
+
+        if i == 0:
+            ax.legend(frameon=True, fancybox=True, shadow=True,
+                      facecolor='w', fontsize=18)
+            ax.set_title("Process survival curve", pad=20,
+                         fontsize=20)
+
+    plt.tight_layout()
+    plt.show()
 
 
 def plot_predictions_insights(results_df):
