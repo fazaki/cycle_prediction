@@ -32,7 +32,7 @@ def test_method_1():
         transform=False
         )
     t2e_obj.preprocess_dev()
-    assert t2e_obj.dataset.shape == (95, 15)
+    assert t2e_obj.dataset.shape == (95, 11)
     assert len(t2e_obj.all_cases) == 36
     assert len(t2e_obj.censored_cases) == 0
     assert t2e_obj.dataset.loc[94, 'fvt3'] == 528120.0
