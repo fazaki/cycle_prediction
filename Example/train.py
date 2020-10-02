@@ -6,7 +6,7 @@ import pickle
 import warnings
 warnings.filterwarnings("ignore")
 
-path = 'data/'
+path = '../data/'
 check_dir(path)
 
 a = os.path.join(path, 'helpdesk.csv')
