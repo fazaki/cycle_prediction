@@ -5,7 +5,7 @@
 *.pyc
 *.swp
 *~
-
+*requirements.txt*
 
 # Unit test / coverage reports
 .coverage
@@ -17,6 +17,7 @@
 *.egg
 *.egg-info
 dist
+src
 build
 eggs
 parts
