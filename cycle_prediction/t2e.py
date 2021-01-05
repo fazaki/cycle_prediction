@@ -1,20 +1,19 @@
 import pandas as pd
 import numpy as np
+import datetime
 import time
-import math
 import logging
 import random
-from math import ceil
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, LSTM, GRU
+from tensorflow.keras.layers import Dense, LSTM, GRU, Concatenate
 from tensorflow.keras.layers import BatchNormalization, Lambda, Input
-from tensorflow.keras.optimizers import Nadam  # , RMSprop, Adam, Nadam
+from tensorflow.keras.optimizers import Nadam, RMSprop, Adam
 from tensorflow.keras.models import Model
 from cycle_prediction.weibull_utils import weibull_mode, check_dir
 from sklearn.metrics import mean_absolute_error
 from sklearn.preprocessing import StandardScaler
 import wtte.wtte as wtte
-from tensorflow.keras.callbacks import History, CSVLogger
+from tensorflow.keras.callbacks import History, CSVLogger, TensorBoard
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 
 # from matplotlib.gridspec import GridSpec
@@ -61,9 +60,13 @@ class t2e:
         dataset,
         prefix,
         resolution,
+        process_id_col='CaseID',
+        event_type_col='ActivityID',
         extra_censored=0,
         end_event_list=[],
-        transform=False,
+        dynamic_features=[],
+        static_features=[],
+        transform='log',
         fit_type='t2e',
         censored=True
     ):
@@ -74,20 +77,34 @@ class t2e:
             prefix (int): Number of history prefixes to train with.
             resolution (str): remaining time resolution
                 {'s': 'seconds', 'h':'hours', 'd':'days'}
-            extra_censored (float): Number of censored traces to create from
-                complete traces.
-            end_event_list (obj): list of (int) containing the process's
+            process_id_col (str): column name to be used as process ID.
+                default: 'CaseID'
+            event_type_col (str): column name to be used as event type.
+                default: 'ActivityID'
+            extra_censored (int): Number of censored traces to artificially 
+                create from complete traces, default 0.
+            end_event_list (list): list of (int) containing the process's
                 possible end events
-            transform (bool): Transform the output to a new space where
+            dynamic_features (list): list of time varying feature columns
+                to include in the model.
+            static_features (list): list of time invariant feature columns
+                to include in the model.
+            transform (str): Transform the output to a new space where
                 it is less biased toward short traces.
-            fit_type (str): t2e (default) => for furture development.
+                Accepted values (None, 'log', 'power').
+                Default: 'log'
+            fit_type (str): 't2e' (default) => for furture development.
             censored (bool): Whether to use/ignore the censored traces
                 (if found).
 
         """
         self.dataset = dataset
+        self.process_id_col = process_id_col
+        self.event_type_col = event_type_col
         self.prefix = prefix
         self.extra_censored = extra_censored
+        self.dynamic_features = dynamic_features
+        self.static_features = static_features
         self.censored = censored
         self.censored_cases = []
         self.observed_cases = []
@@ -98,8 +115,6 @@ class t2e:
         self.end_event_list = end_event_list
         self.resolution = resolution
         self.transform = transform
-        self.root = 1
-        self.power = 1
         self.model = None
         if fit_type == 't2e':
             self.regression = False
@@ -109,17 +124,12 @@ class t2e:
         self.sc = None
 
     def preprocess(self):
-        """a method responsible of the creation of time and activity features.
+        """a method responsible for:
+            1. Removing traces longer than the desired prefix.
+            2. Creating dynamic and static featires as per the initialization
 
         Args:
-            __init__ Mandatory parameter:
-                - dataset
-                - prefix
-                - resolution
-                - end_event_list
-            __init__ Optional parameter:
-                - transform
-                - fit_type
+            None
 
         Returns:
             Updated self.dataset: A pandas dataframe with the following format:
@@ -139,20 +149,26 @@ class t2e:
             +--------------------+-----------+-------------------------------+
             | fvt3               | float     | hour since week start         |
             +--------------------+-----------+-------------------------------+
-            | ActivityID_1       | int       | Activity in one-hot form      |
+            | ActivityID_0       | bool      | Activity in one-hot form      |
             +--------------------+-----------+-------------------------------+
             | ...                | ...       | ...                           |
             +--------------------+-----------+-------------------------------+
-            | ActivityID_n       | ...       | ...                           |
+            | ActivityID_n-1     | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | Static_feature_0   | bool      | static feature in one-hot form|
+            +--------------------+-----------+-------------------------------+
+            | ...                | ...       | ...                           |
+            +--------------------+-----------+-------------------------------+
+            | Static_feature_n-1 | ...       | ...                           |
             +--------------------+-----------+-------------------------------+
             | U                  | int       | 0/1 : censored/observed trace |
             +--------------------+-----------+-------------------------------+
             | T2E/D2E/S2E        | float     | Remaining time in seconds,    |
             |                    |           | hours or days                 |
             +--------------------+-----------+-------------------------------+
-
         """
         # Safe condiftions
+        logger.info('========================================================')
         if self.end_event_list == []:
             raise ValueError(
                 "end_event_list should not be empty"
@@ -162,25 +178,25 @@ class t2e:
         self.dataset.CompleteTimestamp = pd.to_datetime(
             self.dataset.CompleteTimestamp)
         self.dataset.sort_values(
-            ["CaseID", "CompleteTimestamp"], ascending=True)
-        logger.info('Total    cases: %d', self.dataset["CaseID"].nunique())
+            [self.process_id_col, "CompleteTimestamp"], ascending=True)
+        logger.info('Total    cases: %d', self.dataset[self.process_id_col].nunique())
         # Retrieve all sequences with their records count
         # Only keep sequences that has at least prefix + 1 records
-        case_counts = self.dataset.groupby(["CaseID"]).count()
+        case_counts = self.dataset.groupby([self.process_id_col]).count()
         below_prefix = list(
-            case_counts.loc[case_counts["ActivityID"] <= self.prefix].index)
-        self.dataset = self.dataset.loc[~self.dataset["CaseID"].isin(
+            case_counts.loc[case_counts[self.event_type_col] <= self.prefix].index)
+        self.dataset = self.dataset.loc[~self.dataset[self.process_id_col].isin(
             below_prefix)].reset_index(drop=True)
 
         # Store all cases length
-        self.all_cases = self.dataset["CaseID"].unique()
+        self.all_cases = self.dataset[self.process_id_col].unique()
         logger.info('Prefix   cases: %d', len(self.all_cases))
 
         # Create censorship dictionary based on end_event_list
-        self.cen_dict = self.dataset.drop_duplicates('CaseID', keep='last')[
-                                        ['CaseID', 'ActivityID']]\
-                                    .set_index('CaseID')\
-                                    .to_dict()['ActivityID']
+        self.cen_dict = self.dataset.drop_duplicates(self.process_id_col, keep='last')[
+                                        [self.process_id_col, self.event_type_col]]\
+                                    .set_index(self.process_id_col)\
+                                    .to_dict()[self.event_type_col]
         for k, v in self.cen_dict.items():
             if v in self.end_event_list:
                 self.cen_dict[k] = 1
@@ -192,7 +208,7 @@ class t2e:
         i = 0
         for case in observed_cases:
             if i < self.extra_censored:
-                tmp_df = self.dataset.loc[self.dataset['CaseID'] == case]
+                tmp_df = self.dataset.loc[self.dataset[self.process_id_col] == case]
                 if len(tmp_df) >= self.prefix + 2:
                     i += 1
                     last_index = tmp_df.index[-1]
@@ -202,8 +218,8 @@ class t2e:
                     drop_idx = []
                     for j in range(random_censor):
                         drop_idx.append(last_index - j)
-                    self.dataset['CaseID'] = self.dataset['CaseID']\
-                                                 .drop(drop_idx, axis=0)
+                    self.dataset[self.process_id_col] =\
+                        self.dataset[self.process_id_col].drop(drop_idx, axis=0)
                     self.cen_dict[case] = 0
                 else:
                     continue
@@ -211,8 +227,8 @@ class t2e:
                 break
 
         # Assign the censorship state
-        self.dataset['CaseID'].reset_index(drop=True, inplace=True)
-        self.dataset['U'] = self.dataset['CaseID'].map(self.cen_dict)
+        self.dataset[self.process_id_col].reset_index(drop=True, inplace=True)
+        self.dataset['U'] = self.dataset[self.process_id_col].map(self.cen_dict)
         self.censored_cases = [k for k, v in self.cen_dict.items()
                                if int(v) == 0]
         self.observed_cases = [k for k, v in self.cen_dict.items()
@@ -220,25 +236,57 @@ class t2e:
         logger.info("Censored cases: %d", len(self.censored_cases))
         logger.info("Observed cases: %d", len(self.observed_cases))
         # process time features
-        self.dataset = self.dataset.groupby("CaseID").apply(
+        self.dataset = self.dataset.groupby(self.process_id_col).apply(
                         lambda case: self.__time_features(case))
         self.dataset.fvt1.fillna(0, inplace=True)
-        # process activity features
-        dummy = pd.get_dummies(
-            self.dataset["ActivityID"], prefix="ActivityID", drop_first=False)
-        self.dataset = pd.concat([self.dataset, dummy], axis=1)
+        if self.transform == 'log':
+            logger.info('Y_label has been transformed to logarithmic scale')
+            self.dataset['D2E'] = np.log(self.dataset['D2E'] + 1)
+        elif self.transform == 'power':
+            logger.info('Y_label has been transformed with (1/3) root')
+            self.dataset['D2E'] = self.dataset['D2E']**3
 
+        # process categorical features
+        for cf in self.dynamic_features + self.static_features:
+            dummy = pd.get_dummies(self.dataset[cf],
+                                   prefix=cf,
+                                   drop_first=True)
+            self.dataset = pd.concat([self.dataset, dummy], axis=1)
         # Remove last step
         last_step = self.dataset.drop_duplicates(
-            subset=["CaseID"], keep='last')["ActivityID"].index
+            subset=[self.process_id_col], keep='last')[self.event_type_col].index
         self.dataset = self.dataset.drop(
             last_step, axis=0).reset_index(drop=True)
         # drop useless columns
         self.dataset = self.dataset.drop(
             ['CompleteTimestamp', 'T2E'], axis=1)
-        end_list_cols = ['ActivityID_'+x for x in self.end_event_list]
-        self.dataset = self.dataset.drop(
-            end_list_cols, axis=1, errors='ignore')
+        # end_list_cols = [self.event_type_col + '_' + x
+        #                  for x in self.end_event_list]
+        # self.dataset = self.dataset.drop(
+        #     end_list_cols, axis=1, errors='ignore')
+
+        # define dynamic/static features columns IDs
+        dyn_features_idx = np.where(self.dataset.columns.str.contains('fvt'))[0]
+        sta_features_idx = np.array([])
+
+        for i in range(len(self.dynamic_features)):
+            dyn_features_idx = np.concatenate(
+                (dyn_features_idx,
+                 [np.where(self.dataset.columns.str.contains(str(x) + '_'))
+                  for x in self.dynamic_features][i][0]), axis=0)
+
+        for i in range(len(self.static_features)):
+            sta_features_idx = np.concatenate(
+                (sta_features_idx,
+                 [np.where(self.dataset.columns.str.contains(str(x) + '_'))
+                  for x in self.static_features][i][0]), axis=0)
+
+        self.dyn_features_idx = sorted(dyn_features_idx)
+        self.sta_features_idx = sorted(sta_features_idx)
+        self.sta_features_idx = [int(x) for x in self.sta_features_idx]
+        logger.info("Dynamic Features Idx: %s", self.dyn_features_idx)
+        logger.info("Static  Features Idx: %s", self.sta_features_idx)
+
 
     def xy_split(self, scaling):
         """Spliting the dataset into X_test [and y_test if available].
@@ -266,7 +314,7 @@ class t2e:
 
         return X_test, y_test
 
-    def smart_split(self, train_prc, val_prc, scaling):
+    def split(self, train_prc, val_prc, scaling):
         """Spliting the dataset to train, validation and test sets.
 
         The data nature requires a special function for this purpose
@@ -279,22 +327,15 @@ class t2e:
         Returns:
             X_train (object): tensor of shape [n_examples, prefix, n_features]
 
-            X_test (object): tensor of shape [n_examples, prefix, n_features]
-
             X_val (object): tensor of shape [n_examples, prefix, n_features]
+
+            X_test (object): tensor of shape [n_examples, prefix, n_features]
 
             y_train (object): tensor of shape [n_examples, 2]
 
-            y_test (object): tensor of shape [n_examples, 2]
-
             y_val (object): tensor of shape [n_examples, 2]
 
-            train_cases (int): Count of training traces
-
-            val_cases (int): Count of validation traces
-
-            test_cases (int): Count of testing traces
-
+            y_test (object): tensor of shape [n_examples, 2]
         """
         len_train = int(train_prc * len(self.observed_cases))
         len_val = int(len_train*val_prc)
@@ -305,14 +346,14 @@ class t2e:
         if self.censored:
             cases_train = cases_train + self.censored_cases
 
-        logger.info("Training   : %d", len(cases_train))
+        logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train), len_train-len_val, len(self.censored_cases))
         logger.info("Validation : %d", len(cases_val))
         logger.info("Testing    : %d", len(cases_test))
-        df_train = self.dataset.loc[self.dataset['CaseID'].isin(
+        df_train = self.dataset.loc[self.dataset[self.process_id_col].isin(
             cases_train)].reset_index(drop=True)
-        df_val = self.dataset.loc[self.dataset['CaseID'].isin(
+        df_val = self.dataset.loc[self.dataset[self.process_id_col].isin(
             cases_val)].reset_index(drop=True)
-        df_test = self.dataset.loc[self.dataset['CaseID'].isin(
+        df_test = self.dataset.loc[self.dataset[self.process_id_col].isin(
             cases_test)].reset_index(drop=True)
         if scaling:
             sc = StandardScaler()
@@ -324,165 +365,173 @@ class t2e:
                 df_test[["fvt1", "fvt2", "fvt3"]])
             self.sc = sc
 
-        X_train, y_train = self.__xy_split(df_train)
+        X_train,  y_train = self.__xy_split(df_train)
         X_val, y_val = self.__xy_split(df_val)
         X_test, y_test = self.__xy_split(df_test)
-        X_train = np.float64(X_train)
-        y_train = np.float64(y_train)
-        X_val = np.float64(X_val)
-        y_val = np.float64(y_val)
-        X_test = np.float64(X_test)
-        y_test = np.float64(y_test)
-        if self.regression is True:
-            return X_train, X_test, X_val, y_train[:, 0].reshape((-1, 1)), \
-                y_test[:, 0].reshape((-1, 1)), y_val[:, 0].reshape((-1, 1)), \
-                len(cases_train), len(cases_val), len(cases_test)
-        return X_train, X_test, X_val, y_train, y_test, y_val, \
-            len(cases_train), len(cases_val), len(cases_test)
+        # X_train = np.float64(X_train)
+        # y_train = np.float64(y_train)
+        # X_val = np.float64(X_val)
+        # y_val = np.float64(y_val)
+        # X_test = np.float64(X_test)
+        # y_test = np.float64(y_test)
 
-    def fit(self, X_train, y_train, X_val, y_val, size, vb=True):
-        """Fitting a time to event model using a GRU network.
+        if self.regression is True:
+            y_train = y_train[:, 0].reshape((-1, 1))
+            y_val = y_val[:, 0].reshape((-1, 1))
+            y_test = y_test[:, 0].reshape((-1, 1))
+
+        return X_train, X_val, X_test, y_train, y_val, y_test
+
+
+    def build_model(self, X_train, y_train, size_dyn,size_sta):
+        """Build time to event model using a GRU network.
 
         Args:
             X_train (object): training set input features of shape
                 [n_examples, prefix, n_features]
             y_train (object): training set labels of shape
                 [n_examples, n_features]
-            X_val (object): validation set input features of shape
-                [n_examples, prefix, n_features]
-            y_val (object): validation set labels [n_examples, n_features]
-            size (int): GRU units size.
-            vb (bool): verbose (true/False)
+            size_dyn (int): GRU units size.
+            size_sta (int): Static branch hidden layer size (optional)
 
         Returns:
-            :obj:`self`: Updating self.model weights
+            initialize self.model
 
         """
-        if self.transform is True:
-            self.root = 3
-            self.root = 1/self.root
-            self.power = 1/self.root
-            y_train[:, 0] = y_train[:, 0]**self.root
-            y_val[:, 0] = y_val[:, 0]**self.root
-            logger.info('Y_label has been transformed')
-        out_path = "output/"
-        check_dir(out_path)
-        vb = vb
-        if vb:
-            print("\n")
+        logger.info('Initializing time to event model ...')
+        # check if we have static features
+        static_flag = False
+        if X_train[1].shape[2] != 0:
+            static_flag = True
+            X_train_static = X_train[1]
+            n_features_static = X_train_static.shape[-1]
+            # Static model
+            static_input = Input(shape=(n_features_static), name='static_input')
+            dense_static1 = Dense(size_sta, name='hidden_static1')(static_input)
+            bs1 = BatchNormalization()(dense_static1)
+            # dense_static2 = Dense(size_sta//2, name='hidden_static2')(bs1)
+            # bs2 = BatchNormalization()(dense_static2)
+            static_output = Dense(1, name='static_output', activation='sigmoid')(bs1)
+        X_train = X_train[0]
+        # X_val = X_val[0]
+        # Parameters tuning:
         tte_mean_train = np.nanmean(y_train[:, 0].astype('float'))
         mean_u = np.nanmean(y_train[:, 1].astype('float'))
         init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0))
         init_alpha = init_alpha/mean_u
-        history = History()
-        cri = 'val_loss'
-        csv_logger = CSVLogger(out_path + 'training.log',
-                               separator=',', append=False)
-        es = EarlyStopping(monitor=cri, mode='min', verbose=vb,
-                           patience=15, restore_best_weights=False)
-        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri,
-                             mode='min', verbose=vb, save_best_only=True,
-                             save_weights_only=True)
         n_features = X_train.shape[-1]
 
+        # Fixing seeds
         np.random.seed(sd)
         tf.random.set_seed(sd)
-        main_input = Input(shape=(None, n_features), name='main_input')
-        l1 = GRU(size, activation='tanh', recurrent_dropout=0.2,
-                 return_sequences=True)(main_input)
-        b1 = BatchNormalization()(l1)
-        l2 = GRU(size, activation='tanh', recurrent_dropout=0.2,
-                 return_sequences=False)(b1)
-        b2 = BatchNormalization()(l2)
-        l4 = Dense(2, name='Dense_1')(b2)
 
-        output = Lambda(wtte.output_lambda, arguments={
+        # Main model
+        main_input = Input(shape=(None, n_features), name='main_input')
+        l1 = GRU(size_dyn, activation='tanh', recurrent_dropout=0.25,
+                  return_sequences=True)(main_input)
+        b1 = BatchNormalization()(l1)
+        l2 = GRU(size_dyn//2, activation='tanh', recurrent_dropout=0.25,
+                  return_sequences=False)(b1)
+        b2 = BatchNormalization()(l2)
+        if static_flag:
+            dynamic_output = Dense(2, name='Dense_main')(b2)
+            merged = Concatenate()([dynamic_output, static_output])
+            l4 = Dense(2, name='output')(merged)
+        else:
+            l4 = Dense(2, name='output')(b2)
+
+        output = Lambda(wtte.output_lambda, name="lambda_layer", arguments={
                         "init_alpha": init_alpha, "max_beta_value": 100,
                         "scalefactor": 0.5})(l4)
         loss = wtte.loss(kind='continuous', reduce_loss=False).loss_function
         np.random.seed(sd)
         tf.random.set_seed(sd)
-        self.model = Model(inputs=[main_input], outputs=[output])
+        if static_flag:
+            self.model = Model(inputs=[main_input, static_input], outputs=[output])
+        else:
+            self.model = Model(inputs=[main_input], outputs=[output])
         self.model.compile(loss=loss, optimizer=Nadam(
-            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08,
+            lr=0.001, beta_1=0.9, beta_2=0.999, epsilon=1e-08,
             schedule_decay=0.004, clipvalue=3))
-        mg_train = self.__batch_gen_train(X_train, y_train)
-        mg_val = self.__batch_gen_train(X_val, y_val)
+        # self.model.compile(loss=loss, optimizer=RMSprop(
+        #     lr=0.001, clipvalue=3))
+        return
+
+    def fit(self, X_train, y_train, X_val, y_val, bs=64, exp_dir=datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), vb=True):
+        """Fitting a time to event model using a GRU network.
+
+            Args:
+                X_train (object): training set input features of shape
+                    [n_examples, prefix, n_features]
+                y_train (object): training set labels of shape
+                    [n_examples, n_features]
+                X_val (object): validation set input features of shape
+                    [n_examples, prefix, n_features]
+                y_val (object): validation set labels [n_examples, n_features]
+                bs (int): batch size
+                exp_dir (str): tensorboard path
+                vb (bool): verbose (true/False)
+
+            Returns:
+                :obj:`self`: fit self.model weights
+
+            """
+        out_path = "../output/"
+        check_dir(out_path)
+        vb = vb
+        history = History()
+        csv_logger = CSVLogger(out_path + 'training.log',
+                               separator=',', append=False)
+        es = EarlyStopping(monitor='val_loss', mode='min', verbose=vb,
+                           patience=100, restore_best_weights=False)
+        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor='val_loss',
+                             mode='min', verbose=vb, save_best_only=True,
+                             save_weights_only=True)
+        log_dir = out_path + 'tensorboard/' + exp_dir + '/'
+        tensorboard = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, profile_batch=100000000)
+
+        X_train_dyn = X_train[0]
+        X_val_dyn = X_val[0]
+        X_train_sta = X_train[1].reshape((X_train[1].shape[0], X_train[1].shape[2]))
+        X_val_sta = X_val[1].reshape((X_val[1].shape[0], X_val[1].shape[2]))
+
+        if X_train[1].shape[2] != 0:
+            input_list = [X_train_dyn, X_train_sta]
+            val_list = [X_val_dyn, X_val_sta]
+            logger.info("Static   Input Shape: %s", X_train_sta.shape)
+        else:
+            input_list = [X_train_dyn]
+            val_list = [X_val_dyn]
+            logger.info("No Static features added")
+        logger.info("Variable Input Shape: %s", X_train_dyn.shape)
+        logger.info("Output   Input Shape: %s", y_train.shape)
+
+        logger.info('Fitting model ... Batch size: %d',bs)
         start = time.time()
-        self.model.fit_generator(
-            mg_train,
-            epochs=500,
-            steps_per_epoch=ceil(len(X_train) / self.batch_size),
-            validation_data=(mg_val),
-            validation_steps=ceil(len(X_val) / self.batch_size),
+        self.model.fit(
+            input_list,
+            [y_train],
+            epochs=1500,
+            # batch_size=self.batch_size,
+            batch_size=bs,
+            # steps_per_epoch=ceil(X_train_dyn.shape[0] / self.batch_size),
+            validation_data=(
+                    val_list,
+                    [y_val]
+                ),
+            # validation_steps=ceil(X_val_dyn.shape[0] / self.batch_size),
             verbose=vb,
-            callbacks=[history, mc, es, csv_logger],
+            callbacks=[tensorboard, history, mc, es, csv_logger],
             shuffle=False
             )
         try:
             self.model.load_weights(out_path + 'best_model.h5')
-            logger.info('model loaded successfully')
+            logger.info('Model loaded successfully')
         except Exception:
             self.model is None
 
         end = time.time()
-        self.fit_time = np.round(end-start, 0)
-        return
-
-    def fit_regression(self, X_train, y_train, X_val, y_val, size, vb=True):
-
-        out_path = "output/"
-        check_dir(out_path)
-        vb = vb
-        if vb:
-            print("\n")
-        history = History()
-        cri = 'va_loss'
-        csv_logger = CSVLogger(out_path + 'training.log',
-                               separator=',', append=False)
-        es = EarlyStopping(monitor=cri, mode='min', verbose=vb,
-                           patience=42, restore_best_weights=False)
-        mc = ModelCheckpoint(out_path + 'best_model.h5', monitor=cri,
-                             mode='min', verbose=vb, save_best_only=True,
-                             save_weights_only=True)
-        n_features = X_train.shape[-1]
-
-        np.random.seed(sd)
-        tf.random.set_seed(sd)
-        main_input = Input(shape=(None, n_features), name='main_input')
-        l1 = LSTM(size, activation='tanh', recurrent_dropout=0.2,
-                  return_sequences=True)(main_input)
-        b1 = BatchNormalization()(l1)
-        l2 = LSTM(size/2, activation='tanh', recurrent_dropout=0.2,
-                  return_sequences=False)(b1)
-        b2 = BatchNormalization()(l2)
-        output = Dense(1, name='output')(b2)
-        np.random.seed(sd)
-        tf.random.set_seed(sd)
-        self.model = Model(inputs=[main_input], outputs=[output])
-        self.model.compile(loss={'output': 'mae'}, optimizer=Nadam(
-            lr=0.005, beta_1=0.9, beta_2=0.999, epsilon=1e-08,
-            schedule_decay=0.004, clipvalue=3))
-        mg_train = self.__batch_gen_train(X_train, y_train)
-        mg_val = self.__batch_gen_train(X_val, y_val)
-        start = time.time()
-        self.model.fit_generator(mg_train,
-                                 epochs=500,
-                                 steps_per_epoch=ceil(
-                                     len(X_train) / self.batch_size),
-                                 validation_data=(mg_val),
-                                 validation_steps=ceil(
-                                     len(X_val) / self.batch_size),
-                                 verbose=vb,
-                                 callbacks=[history, mc, es, csv_logger],
-                                 shuffle=False)
-        try:
-            self.model.load_weights(out_path + 'best_model.h5')
-        except Exception:
-            self.model is None
-
-        end = time.time()
-        self.fit_time = np.round(end-start, 0)
+        self.fit_time = np.round(end - start, 0)
         return
 
     def predict(self, X):
@@ -496,12 +545,13 @@ class t2e:
             y_pred (object): pandas dataframe with the shape [n_examples, 2]
 
         """
+        logger.info("Predicting test set ...")
         if self.model is None:
             return None
         else:
-            mg_test = self.__batch_gen_test(X)
-            y_pred = self.model.predict_generator(
-                mg_test, steps=ceil(len(X) / self.batch_size))
+            X_dyn = X[0]
+            X_sta = X[1].reshape(X[1].shape[0], X[1].shape[2])
+            y_pred = self.model.predict([X_dyn, X_sta], batch_size=self.batch_size)
             y_pred_df = pd.DataFrame(y_pred, columns=['alpha', 'beta'])
             y_pred = y_pred_df[['alpha', 'beta']].apply(
                 lambda row: weibull_mode(row[0], row[1]), axis=1)
@@ -537,12 +587,13 @@ class t2e:
         """
         # Make some predictions and put them alongside the real TTE
         # and event indicator values
+        logger.info("Evaluating test set ...")
         if self.model is None:
             return np.nan, np.nan
         else:
-            mg_test = self.__batch_gen_test(X)
-            y_pred = self.model.predict_generator(
-                mg_test, steps=ceil(len(X) / self.batch_size))
+            X_dyn = X[0]
+            X_sta = X[1].reshape(X[1].shape[0], X[1].shape[2])
+            y_pred = self.model.predict([X_dyn, X_sta], batch_size=self.batch_size)
             test_result = np.concatenate((y, y_pred), axis=1)
 
             if self.regression is True:
@@ -574,14 +625,18 @@ class t2e:
                 test_results_df["Accurate"] = test_results_df["MAE"] <= 2
                 # accuracy = round(test_results_df["Accurate"].mean()*100,3)
 
-            if self.regression is False:
+            else:
                 test_results_df = pd.DataFrame(
                     test_result, columns=['T', 'U', 'alpha', 'beta'])
                 test_results_df['T_pred'] = test_results_df[['alpha', 'beta']]\
                     .apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
-                if self.transform is True:
-                    test_results_df['T_pred'] = test_results_df['T_pred']\
-                        ** self.power
+                if self.transform == 'log':
+                    test_results_df['T'] = np.exp(test_results_df['T']) -1
+                    test_results_df['T_pred'] = np.exp(test_results_df['T_pred']) - 1
+                    logger.info("Y_label is restored")
+                elif self.transform == 'power':
+                    test_results_df['T'] = test_results_df['T'] ** 3
+                    test_results_df['T_pred'] = test_results_df['T_pred'] ** 3
                     logger.info("Y_label is restored")
                 if self.resolution == 's':
                     test_results_df['error (days)'] = (
@@ -612,6 +667,8 @@ class t2e:
                     | ((test_results_df["U"] == 0) &
                         (test_results_df['T_pred'] >= test_results_df["T"]))
                 # accuracy = round(test_results_df["Accurate"].mean()*100,3)
+            logger.info("MAE: %f, unique redictions: %d ", mae, len(test_results_df['T_pred'].unique()))
+
             return test_results_df, mae
 
     def get_cen_prc(self):
@@ -621,7 +678,6 @@ class t2e:
             return np.nan
 
     def __time_features(self, case):
-        # case = case.sort_values('CompleteTimestamp')
         first_index = case.index[0]
         last_index = case.index[-1]
         endtime = case["CompleteTimestamp"][last_index]
@@ -644,32 +700,44 @@ class t2e:
         return case
 
     def __xy_split(self, data):
-        X = data.groupby(["CaseID"]).apply(lambda df: self.__extract_X(df))
-        X = np.array(tf.convert_to_tensor(X))
-        y = data.groupby(["CaseID"]).apply(lambda df: self.__extract_y(df))
+        X = data.groupby([self.process_id_col]).apply(
+                            lambda df: self.__extract_X(df))
+        X_dyn = [arr[0] for arr in X]
+        X_sta = [arr[1] for arr in X]
+        X_dyn = np.array(tf.convert_to_tensor(X_dyn))
+        X_sta = np.array(tf.convert_to_tensor(X_sta))
+        X_sta = X_sta[:,0,:].reshape(X_sta.shape[0], 1, X_sta.shape[2])
+        y = data.groupby([self.process_id_col]).apply(
+                            lambda df: self.__extract_y(df))
         y = np.array(tf.convert_to_tensor(y))
-        return X, y
+        return((X_dyn, X_sta), y)
 
     def __extract_X(self, df):
-        feature_idx = np.concatenate(
-            np.where(df.columns.str.contains('ActivityID_')) + \
-            #  np.where(df.columns.str.contains('weekday_')) + \
-            np.where(df.columns.str.contains('fvt'))
-        )
-        x = []
+        x_dyn = []
+        x_sta = []
         if len(df) < self.prefix:
-            x.append(
-                np.concatenate(
-                    (np.full((self.prefix - df.shape[0], len(feature_idx)),
-                     fill_value=0), df.values[0:self.prefix, feature_idx]),
-                    axis=0))
+            logger.info("this should NOT happen !!")
+            x_dyn.append(np.concatenate(
+                (np.full((self.prefix - df.shape[0], len(self.dyn_features_idx)),
+                 fill_value=0), df.values[0:self.prefix, self.dyn_features_idx]),
+                axis=0))
         else:
-            x.append(df.values[0:self.prefix, feature_idx])
+            x_dyn.append(df.values[0:self.prefix, self.dyn_features_idx])
+        x_dyn = np.hstack(np.array(x_dyn)).flatten()
+        x_dyn = x_dyn.reshape((self.prefix, len(self.dyn_features_idx)))
 
-        x = np.hstack(np.array(x)).flatten()
-        x = x.reshape((self.prefix, len(feature_idx)))
+        if len(df) < self.prefix:
+            logger.info("this should NOT happen !!")
+            x_sta.append(np.concatenate(
+                (np.full((self.prefix - df.shape[0], len(self.sta_features_idx)),
+                 fill_value=0), df.values[0:self.prefix, self.sta_features_idx]),
+                axis=0))
+        else:
+            x_sta.append(df.values[0:self.prefix, self.sta_features_idx])
+        x_sta = np.hstack(np.array(x_sta)).flatten()
+        x_sta = x_sta.reshape((self.prefix, len(self.sta_features_idx)))
 
-        return(x)
+        return x_dyn, x_sta
 
     def __extract_y(self, df):
         y = []
@@ -689,25 +757,31 @@ class t2e:
             y.append(df.values[self.prefix-1, time_idx])
 
         # y.append(df.loc[0, "U"])
-        y.append(self.cen_dict[df['CaseID'].unique()[0]])
+        y.append(self.cen_dict[df[self.process_id_col].unique()[0]])
         y = np.hstack(np.array(y)).flatten()
         y.reshape((1, 2))
         return y
 
-    def __batch_gen_train(self, X, y):
-        n_batches = math.ceil(len(X) / self.batch_size)
-        while True:
-            for i in range(n_batches):
-                X_batch = X[i*self.batch_size:(i+1)*self.batch_size, :, :]
-#                 if self.regression == True:
-#                     y_batch = y[i*self.batch_size:(i+1)*self.batch_size]
-#                 else:
-                y_batch = y[i*self.batch_size:(i+1)*self.batch_size, :]
-                yield X_batch, y_batch
+    # def __batch_gen_X_dyn(self, X_dyn):
+    #     n_batches = math.ceil(len(X_dyn) / self.batch_size)
+    #     while True:
+    #         for i in range(n_batches):
+    #             dyn_batch = X_dyn[self.batch_size*i: self.batch_size*(i+1), :, :]
+    #             yield dyn_batch
 
-    def __batch_gen_test(self, X):
-        n_batches = math.ceil(len(X) / self.batch_size)
-        while True:
-            for i in range(n_batches):
-                X_batch = X[i*self.batch_size:(i+1)*self.batch_size, :, :]
-                yield X_batch
+    # def __batch_gen_X_sta(self, X_sta):
+    #     n_batches = math.ceil(len(X_sta) / self.batch_size)
+    #     while True:
+    #         for i in range(n_batches):
+    #             sta_batch = X_sta[self.batch_size*i: self.batch_size*(i+1), 0, :]
+    #             yield sta_batch
+
+    # def __batch_gen_y(self, y):
+    #     n_batches = math.ceil(len(y) / self.batch_size)
+    #     while True:
+    #         for i in range(n_batches):
+    #             # if self.regression == True:
+    #             #     y_batch = y[i*self.batch_size:(i+1)*self.batch_size]
+    #             # else:
+    #             y_batch = y[self.batch_size*i: self.batch_size*(i+1), :]
+    #             yield y_batch

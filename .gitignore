@@ -29,3 +29,7 @@ lib
 lib64
 __pycache__
 cycle_prediction/__pycache__
+tensorboard
+*Exploring*
+*dev*
+*logs*

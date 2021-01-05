@@ -41,8 +41,9 @@ def plot_top_predictions(
         lim: limit to plot the best n predictions
         U: 1:observed or 0:censored example to plot
     """
-    top_features = ['MAE', 'T_pred']
-    sorting_bool = [True, False]
+    result_df = result_df.loc[result_df['Accurate'] == True]
+    top_features = ['T_pred', 'MAE']
+    sorting_bool = [False, True]
     result_df = result_df.loc[result_df["U"] == U]
     result_df_noZero = result_df.loc[result_df["T"] != 0]
     result_df_noZero = result_df_noZero.loc[result_df["T_pred"] != 0]
