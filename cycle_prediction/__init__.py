@@ -1,1 +1,1 @@
-__version__ = 'new_model'
+__version__ = '1.2.0'

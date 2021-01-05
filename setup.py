@@ -6,7 +6,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="cycle_prediction",  # Replace with your own username
-    version="1.1.1",
+    version="1.2.0",
     author="Fadi Baskharon",
     author_email="nzfadi@gmail.com",
     description="A package to train and predict the end of a process from\
@@ -37,9 +37,9 @@ setuptools.setup(
         ]
     },
     classifiers=[
-        "Programming Language :: Python :: 3.7",
+        "Programming Language :: Python :: 3.6",
         "License :: OSI Approved :: MIT License",
         "Operating System :: OS Independent",
     ],
-    python_requires='>=3.7',
+    python_requires='>=3.6',
 )
