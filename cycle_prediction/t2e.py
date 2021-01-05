@@ -5,9 +5,9 @@ import time
 import logging
 import random
 import tensorflow as tf
-from tensorflow.keras.layers import Dense, LSTM, GRU, Concatenate
+from tensorflow.keras.layers import Dense, GRU, Concatenate  # LSTM
 from tensorflow.keras.layers import BatchNormalization, Lambda, Input
-from tensorflow.keras.optimizers import Nadam, RMSprop, Adam
+from tensorflow.keras.optimizers import Nadam  # RMSprop, Adam
 from tensorflow.keras.models import Model
 from cycle_prediction.weibull_utils import weibull_mode, check_dir
 from sklearn.metrics import mean_absolute_error
@@ -81,7 +81,7 @@ class t2e:
                 default: 'CaseID'
             event_type_col (str): column name to be used as event type.
                 default: 'ActivityID'
-            extra_censored (int): Number of censored traces to artificially 
+            extra_censored (int): Number of censored traces to artificially
                 create from complete traces, default 0.
             end_event_list (list): list of (int) containing the process's
                 possible end events
@@ -179,24 +179,28 @@ class t2e:
             self.dataset.CompleteTimestamp)
         self.dataset.sort_values(
             [self.process_id_col, "CompleteTimestamp"], ascending=True)
-        logger.info('Total    cases: %d', self.dataset[self.process_id_col].nunique())
+        logger.info('Total    cases: %d', self.dataset[self.process_id_col]
+                    .nunique())
         # Retrieve all sequences with their records count
         # Only keep sequences that has at least prefix + 1 records
         case_counts = self.dataset.groupby([self.process_id_col]).count()
         below_prefix = list(
-            case_counts.loc[case_counts[self.event_type_col] <= self.prefix].index)
-        self.dataset = self.dataset.loc[~self.dataset[self.process_id_col].isin(
-            below_prefix)].reset_index(drop=True)
+            case_counts.loc[case_counts[self.event_type_col]
+                            <= self.prefix].index)
+        self.dataset = self.dataset.loc[~self.dataset[self.process_id_col]
+                                        .isin(below_prefix)]\
+            .reset_index(drop=True)
 
         # Store all cases length
         self.all_cases = self.dataset[self.process_id_col].unique()
         logger.info('Prefix   cases: %d', len(self.all_cases))
 
         # Create censorship dictionary based on end_event_list
-        self.cen_dict = self.dataset.drop_duplicates(self.process_id_col, keep='last')[
-                                        [self.process_id_col, self.event_type_col]]\
-                                    .set_index(self.process_id_col)\
-                                    .to_dict()[self.event_type_col]
+        self.cen_dict = self.dataset.drop_duplicates(
+            self.process_id_col, keep='last')[
+                [self.process_id_col, self.event_type_col]]\
+            .set_index(self.process_id_col)\
+            .to_dict()[self.event_type_col]
         for k, v in self.cen_dict.items():
             if v in self.end_event_list:
                 self.cen_dict[k] = 1
@@ -208,7 +212,8 @@ class t2e:
         i = 0
         for case in observed_cases:
             if i < self.extra_censored:
-                tmp_df = self.dataset.loc[self.dataset[self.process_id_col] == case]
+                tmp_df = self.dataset\
+                             .loc[self.dataset[self.process_id_col] == case]
                 if len(tmp_df) >= self.prefix + 2:
                     i += 1
                     last_index = tmp_df.index[-1]
@@ -219,7 +224,8 @@ class t2e:
                     for j in range(random_censor):
                         drop_idx.append(last_index - j)
                     self.dataset[self.process_id_col] =\
-                        self.dataset[self.process_id_col].drop(drop_idx, axis=0)
+                        self.dataset[self.process_id_col]\
+                            .drop(drop_idx, axis=0)
                     self.cen_dict[case] = 0
                 else:
                     continue
@@ -228,7 +234,8 @@ class t2e:
 
         # Assign the censorship state
         self.dataset[self.process_id_col].reset_index(drop=True, inplace=True)
-        self.dataset['U'] = self.dataset[self.process_id_col].map(self.cen_dict)
+        self.dataset['U'] = self.dataset[self.process_id_col]\
+                                .map(self.cen_dict)
         self.censored_cases = [k for k, v in self.cen_dict.items()
                                if int(v) == 0]
         self.observed_cases = [k for k, v in self.cen_dict.items()
@@ -254,7 +261,8 @@ class t2e:
             self.dataset = pd.concat([self.dataset, dummy], axis=1)
         # Remove last step
         last_step = self.dataset.drop_duplicates(
-            subset=[self.process_id_col], keep='last')[self.event_type_col].index
+            subset=[self.process_id_col], keep='last')[self.event_type_col]\
+            .index
         self.dataset = self.dataset.drop(
             last_step, axis=0).reset_index(drop=True)
         # drop useless columns
@@ -266,7 +274,8 @@ class t2e:
         #     end_list_cols, axis=1, errors='ignore')
 
         # define dynamic/static features columns IDs
-        dyn_features_idx = np.where(self.dataset.columns.str.contains('fvt'))[0]
+        dyn_features_idx = np.where(self.dataset.columns.str
+                                        .contains('fvt'))[0]
         sta_features_idx = np.array([])
 
         for i in range(len(self.dynamic_features)):
@@ -286,7 +295,6 @@ class t2e:
         self.sta_features_idx = [int(x) for x in self.sta_features_idx]
         logger.info("Dynamic Features Idx: %s", self.dyn_features_idx)
         logger.info("Static  Features Idx: %s", self.sta_features_idx)
-
 
     def xy_split(self, scaling):
         """Spliting the dataset into X_test [and y_test if available].
@@ -346,7 +354,8 @@ class t2e:
         if self.censored:
             cases_train = cases_train + self.censored_cases
 
-        logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train), len_train-len_val, len(self.censored_cases))
+        logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train),
+                    len_train-len_val, len(self.censored_cases))
         logger.info("Validation : %d", len(cases_val))
         logger.info("Testing    : %d", len(cases_test))
         df_train = self.dataset.loc[self.dataset[self.process_id_col].isin(
@@ -382,8 +391,7 @@ class t2e:
 
         return X_train, X_val, X_test, y_train, y_val, y_test
 
-
-    def build_model(self, X_train, y_train, size_dyn,size_sta):
+    def build_model(self, X_train, y_train, size_dyn, size_sta):
         """Build time to event model using a GRU network.
 
         Args:
@@ -406,15 +414,18 @@ class t2e:
             X_train_static = X_train[1]
             n_features_static = X_train_static.shape[-1]
             # Static model
-            static_input = Input(shape=(n_features_static), name='static_input')
-            dense_static1 = Dense(size_sta, name='hidden_static1')(static_input)
+            static_input = Input(shape=(n_features_static),
+                                 name='static_input')
+            dense_static1 = Dense(size_sta,
+                                  name='hidden_static1')(static_input)
             bs1 = BatchNormalization()(dense_static1)
             # dense_static2 = Dense(size_sta//2, name='hidden_static2')(bs1)
             # bs2 = BatchNormalization()(dense_static2)
-            static_output = Dense(1, name='static_output', activation='sigmoid')(bs1)
+            static_output = Dense(1,
+                                  name='static_output',
+                                  activation='sigmoid')(bs1)
         X_train = X_train[0]
-        # X_val = X_val[0]
-        # Parameters tuning:
+
         tte_mean_train = np.nanmean(y_train[:, 0].astype('float'))
         mean_u = np.nanmean(y_train[:, 1].astype('float'))
         init_alpha = -1.0/np.log(1.0-1.0/(tte_mean_train+1.0))
@@ -428,10 +439,10 @@ class t2e:
         # Main model
         main_input = Input(shape=(None, n_features), name='main_input')
         l1 = GRU(size_dyn, activation='tanh', recurrent_dropout=0.25,
-                  return_sequences=True)(main_input)
+                 return_sequences=True)(main_input)
         b1 = BatchNormalization()(l1)
         l2 = GRU(size_dyn//2, activation='tanh', recurrent_dropout=0.25,
-                  return_sequences=False)(b1)
+                 return_sequences=False)(b1)
         b2 = BatchNormalization()(l2)
         if static_flag:
             dynamic_output = Dense(2, name='Dense_main')(b2)
@@ -447,7 +458,8 @@ class t2e:
         np.random.seed(sd)
         tf.random.set_seed(sd)
         if static_flag:
-            self.model = Model(inputs=[main_input, static_input], outputs=[output])
+            self.model = Model(inputs=[main_input, static_input],
+                               outputs=[output])
         else:
             self.model = Model(inputs=[main_input], outputs=[output])
         self.model.compile(loss=loss, optimizer=Nadam(
@@ -457,7 +469,9 @@ class t2e:
         #     lr=0.001, clipvalue=3))
         return
 
-    def fit(self, X_train, y_train, X_val, y_val, bs=64, exp_dir=datetime.datetime.now().strftime("%Y%m%d-%H%M%S"), vb=True):
+    def fit(self, X_train, y_train, X_val, y_val, bs=64,
+            exp_dir=datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+            vb=True):
         """Fitting a time to event model using a GRU network.
 
             Args:
@@ -488,12 +502,16 @@ class t2e:
                              mode='min', verbose=vb, save_best_only=True,
                              save_weights_only=True)
         log_dir = out_path + 'tensorboard/' + exp_dir + '/'
-        tensorboard = tf.keras.callbacks.TensorBoard(log_dir=log_dir, histogram_freq=1, profile_batch=100000000)
+        tensorboard = TensorBoard(log_dir=log_dir,
+                                  histogram_freq=1,
+                                  profile_batch=100000000)
 
         X_train_dyn = X_train[0]
         X_val_dyn = X_val[0]
-        X_train_sta = X_train[1].reshape((X_train[1].shape[0], X_train[1].shape[2]))
-        X_val_sta = X_val[1].reshape((X_val[1].shape[0], X_val[1].shape[2]))
+        X_train_sta = X_train[1].reshape((X_train[1].shape[0],
+                                          X_train[1].shape[2]))
+        X_val_sta = X_val[1].reshape((X_val[1].shape[0],
+                                      X_val[1].shape[2]))
 
         if X_train[1].shape[2] != 0:
             input_list = [X_train_dyn, X_train_sta]
@@ -506,7 +524,7 @@ class t2e:
         logger.info("Variable Input Shape: %s", X_train_dyn.shape)
         logger.info("Output   Input Shape: %s", y_train.shape)
 
-        logger.info('Fitting model ... Batch size: %d',bs)
+        logger.info('Fitting model ... Batch size: %d', bs)
         start = time.time()
         self.model.fit(
             input_list,
@@ -535,11 +553,11 @@ class t2e:
         return
 
     def predict(self, X):
-        """ A method to predict the alpha and beta parameters\
-                defining the weibull pdf
+        """A method to predict alpha & beta parameter for a given prefix of trace
+            after using the fit method to train the self.model
 
         Args:
-            X (object): Input array of [n_examples, prefix, n_features]
+            X (tensor): Input array of size [n_examples, prefix, n_features]
 
         Returns:
             y_pred (object): pandas dataframe with the shape [n_examples, 2]
@@ -551,17 +569,22 @@ class t2e:
         else:
             X_dyn = X[0]
             X_sta = X[1].reshape(X[1].shape[0], X[1].shape[2])
-            y_pred = self.model.predict([X_dyn, X_sta], batch_size=self.batch_size)
+            y_pred = self.model.predict([X_dyn, X_sta],
+                                        batch_size=self.batch_size)
             y_pred_df = pd.DataFrame(y_pred, columns=['alpha', 'beta'])
             y_pred = y_pred_df[['alpha', 'beta']].apply(
                 lambda row: weibull_mode(row[0], row[1]), axis=1)
             return y_pred
 
     def evaluate(self, X, y):
-        """A method to evaluate the model prodiction with a test set
+        """A method to predict and evaluate the self.model after using the fit
+            method, given a test set with known ground truth
+
+        Args:
+            X (tensor): Input array of size [n_examples, prefix, n_features]
+            y (tensor): Output array of size [nexample, 2]
 
         Returns:
-            mae (int): Mean absolute error of all predictions
             test_results_df: pandas dataframe with the following format
 
             +--------------+-----------+----------------------------------+
@@ -581,9 +604,10 @@ class t2e:
             +--------------+-----------+----------------------------------+
             | MAE          | float     | Absolute error in days           |
             +--------------+-----------+----------------------------------+
-            | Accurate     | boolean   | Based on predfined threshold     |
+            | Accurate     | boolean   | For development purpose          |
             +--------------+-----------+----------------------------------+
 
+            mae (float): Mean absolute error of all predictions
         """
         # Make some predictions and put them alongside the real TTE
         # and event indicator values
@@ -593,7 +617,8 @@ class t2e:
         else:
             X_dyn = X[0]
             X_sta = X[1].reshape(X[1].shape[0], X[1].shape[2])
-            y_pred = self.model.predict([X_dyn, X_sta], batch_size=self.batch_size)
+            y_pred = self.model.predict([X_dyn, X_sta],
+                                        batch_size=self.batch_size)
             test_result = np.concatenate((y, y_pred), axis=1)
 
             if self.regression is True:
@@ -631,8 +656,9 @@ class t2e:
                 test_results_df['T_pred'] = test_results_df[['alpha', 'beta']]\
                     .apply(lambda row: weibull_mode(row[0], row[1]), axis=1)
                 if self.transform == 'log':
-                    test_results_df['T'] = np.exp(test_results_df['T']) -1
-                    test_results_df['T_pred'] = np.exp(test_results_df['T_pred']) - 1
+                    test_results_df['T'] = np.exp(test_results_df['T']) - 1
+                    test_results_df['T_pred'] =\
+                        np.exp(test_results_df['T_pred']) - 1
                     logger.info("Y_label is restored")
                 elif self.transform == 'power':
                     test_results_df['T'] = test_results_df['T'] ** 3
@@ -667,7 +693,8 @@ class t2e:
                     | ((test_results_df["U"] == 0) &
                         (test_results_df['T_pred'] >= test_results_df["T"]))
                 # accuracy = round(test_results_df["Accurate"].mean()*100,3)
-            logger.info("MAE: %f, unique redictions: %d ", mae, len(test_results_df['T_pred'].unique()))
+            logger.info("MAE: %f, unique redictions: %d ", mae,
+                        len(test_results_df['T_pred'].unique()))
 
             return test_results_df, mae
 
@@ -706,7 +733,7 @@ class t2e:
         X_sta = [arr[1] for arr in X]
         X_dyn = np.array(tf.convert_to_tensor(X_dyn))
         X_sta = np.array(tf.convert_to_tensor(X_sta))
-        X_sta = X_sta[:,0,:].reshape(X_sta.shape[0], 1, X_sta.shape[2])
+        X_sta = X_sta[:, 0, :].reshape(X_sta.shape[0], 1, X_sta.shape[2])
         y = data.groupby([self.process_id_col]).apply(
                             lambda df: self.__extract_y(df))
         y = np.array(tf.convert_to_tensor(y))
@@ -718,8 +745,10 @@ class t2e:
         if len(df) < self.prefix:
             logger.info("this should NOT happen !!")
             x_dyn.append(np.concatenate(
-                (np.full((self.prefix - df.shape[0], len(self.dyn_features_idx)),
-                 fill_value=0), df.values[0:self.prefix, self.dyn_features_idx]),
+                (np.full((self.prefix - df.shape[0],
+                          len(self.dyn_features_idx)),
+                 fill_value=0),
+                 df.values[0:self.prefix, self.dyn_features_idx]),
                 axis=0))
         else:
             x_dyn.append(df.values[0:self.prefix, self.dyn_features_idx])
@@ -729,8 +758,10 @@ class t2e:
         if len(df) < self.prefix:
             logger.info("this should NOT happen !!")
             x_sta.append(np.concatenate(
-                (np.full((self.prefix - df.shape[0], len(self.sta_features_idx)),
-                 fill_value=0), df.values[0:self.prefix, self.sta_features_idx]),
+                (np.full((self.prefix - df.shape[0],
+                          len(self.sta_features_idx)),
+                 fill_value=0),
+                 df.values[0:self.prefix, self.sta_features_idx]),
                 axis=0))
         else:
             x_sta.append(df.values[0:self.prefix, self.sta_features_idx])
@@ -761,27 +792,3 @@ class t2e:
         y = np.hstack(np.array(y)).flatten()
         y.reshape((1, 2))
         return y
-
-    # def __batch_gen_X_dyn(self, X_dyn):
-    #     n_batches = math.ceil(len(X_dyn) / self.batch_size)
-    #     while True:
-    #         for i in range(n_batches):
-    #             dyn_batch = X_dyn[self.batch_size*i: self.batch_size*(i+1), :, :]
-    #             yield dyn_batch
-
-    # def __batch_gen_X_sta(self, X_sta):
-    #     n_batches = math.ceil(len(X_sta) / self.batch_size)
-    #     while True:
-    #         for i in range(n_batches):
-    #             sta_batch = X_sta[self.batch_size*i: self.batch_size*(i+1), 0, :]
-    #             yield sta_batch
-
-    # def __batch_gen_y(self, y):
-    #     n_batches = math.ceil(len(y) / self.batch_size)
-    #     while True:
-    #         for i in range(n_batches):
-    #             # if self.regression == True:
-    #             #     y_batch = y[i*self.batch_size:(i+1)*self.batch_size]
-    #             # else:
-    #             y_batch = y[self.batch_size*i: self.batch_size*(i+1), :]
-    #             yield y_batch
