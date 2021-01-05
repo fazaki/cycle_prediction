@@ -41,8 +41,9 @@ def plot_top_predictions(
         lim: limit to plot the best n predictions
         U: 1:observed or 0:censored example to plot
     """
-    top_features = ['MAE', 'T_pred']
-    sorting_bool = [True, False]
+    result_df = result_df.loc[result_df['Accurate'] == True]
+    top_features = ['T_pred', 'MAE']
+    sorting_bool = [False, True]
     result_df = result_df.loc[result_df["U"] == U]
     result_df_noZero = result_df.loc[result_df["T"] != 0]
     result_df_noZero = result_df_noZero.loc[result_df["T_pred"] != 0]
@@ -81,9 +82,9 @@ def plot_top_predictions(
         ax.plot(t, weibull_pdf(alpha, beta, t), color='gray',
                 label="Weibull distribution")
         ax.vlines(mode, ymin=0, ymax=y_max_1, colors='k',
-                  linestyles='--', label="Predicted failure time")
+                  linestyles='--', label="Pred. remaining time")
         ax.scatter(T, weibull_pdf(alpha, beta, T), color='g',
-                   s=100, label="Actual failure time")
+                   s=100, label="Actual remaining time")
         ax.set_facecolor('lightgray')
         ax.set_ylim(bottom=0)
         ax.set_xlim(left=-1, right=max_time)
@@ -92,8 +93,10 @@ def plot_top_predictions(
         if i == 0:
             ax.legend(frameon=True, fancybox=True, shadow=True,
                       facecolor='w', fontsize=18)
-            ax.set_title("End time probability", pad=20,
+            ax.set_title("Remaining time distribution", pad=20,
                          fontsize=20)
+            ax.set_xlabel("Remaining time", fontsize=15)
+            ax.set_ylabel("f(t)", fontsize=15, rotation=360, labelpad=18)
         ###################
         #  Survival plot  #
         ###################
@@ -114,7 +117,8 @@ def plot_top_predictions(
                       facecolor='w', fontsize=18)
             ax.set_title("Process survival curve", pad=20,
                          fontsize=20)
-
+            ax.set_xlabel("Remaining time", fontsize=15)
+            ax.set_ylabel("S(t)", fontsize=15, rotation=360, labelpad=18)
     plt.tight_layout()
     plt.show()
 
@@ -125,8 +129,8 @@ def plot_predictions_insights(results_df):
     observed = results_df.loc[results_df['U'] == 1]
     sns.scatterplot(observed['T'], observed["T_pred"],
                     hue=observed["Accurate"])
-    plt.xlabel("Actual failure time", fontsize=12)
-    plt.ylabel("Predicted failure time", fontsize=12)
+    plt.xlabel("Actual remaining time", fontsize=12)
+    plt.ylabel("Predicted remaining time", fontsize=12)
     plt.title('Actual Vs. Predicted (Observed)', fontsize=18)
     plt.legend(loc='upper left')
     plt.subplot(2, 2, 2)
@@ -134,7 +138,7 @@ def plot_predictions_insights(results_df):
     sns.scatterplot(censored['T'], censored["T_pred"],
                     hue=censored["Accurate"])
     plt.xlabel("Time of observation", fontsize=12)
-    plt.ylabel("Predicted failure time", fontsize=12)
+    plt.ylabel("Predicted remaining time", fontsize=12)
     plt.title('Actual Vs. Predicted (Censored)', fontsize=18)
     plt.legend(loc='upper left')
     plt.subplot(2, 2, (3, 4))
