@@ -1,4 +1,5 @@
 import sys
+sys.path.insert(0, '../')
 import os
 from cycle_prediction.t2e import t2e
 from cycle_prediction.weibull_utils import check_dir
@@ -6,7 +7,7 @@ import pandas as pd
 import pickle
 import warnings
 warnings.filterwarnings("ignore")
-sys.path.insert(0, '../')
+
 
 path = '../data/'
 check_dir(path)
@@ -31,6 +32,10 @@ h = pd.read_csv(h)
 
 
 df_name = {
+    'a': 'helpdesk',
+    'b': 'bpi12',
+    'c': 'bpi12_norep',
+    'd': 'env',
     'e': 'bpic13_all',
     'f': 'Sepsis',
     'g': 'Road_traffic',
@@ -38,6 +43,10 @@ df_name = {
 }
 
 df_dict = {
+    'a': a,
+    'b': b,
+    'c': c,
+    'd': d,
     'e': e,
     'f': f,
     'g': g,
@@ -45,6 +54,10 @@ df_dict = {
 }
 
 range_dict = {
+    'a': range(2, 8, 1),
+    'b': range(2, 22, 2),
+    'c': range(2, 12, 2),
+    'd': range(2, 22, 2),
     'e': range(2, 22, 2),
     'f': range(3, 11, 1),
     'g': range(1, 6, 1),
@@ -52,10 +65,10 @@ range_dict = {
 }
 
 end_event_dict = {
-    'a': 6,
-    'b': 6,
-    'c': 6,
-    'd': 6,
+    'a': [1,2,3,4,5,6],
+    'b': [1,2,3,4,5,6],
+    'c': [1,2,3,4,5,6],
+    'd': [1,2,3,4,5,6],
     'e': ['Completed+Closed', 'Completed+In Call', 'Completed-Closed',
           'Completed+Resolved', 'Completed+Cancelled', 'Completed-Cancelled'],
     'f': ['Release A', 'Release B', 'Release C', 'Release D', 'Release E',
@@ -72,54 +85,46 @@ cols = ["prefix", "Layer_Size", "MAE", "unique_pred", "train_size",
 
 exp_dict = {
     1: {
-      'mae_path': '../output/maes/low_censored/',
-      'dynamic_features': ['ActivityID'],
-      'static_features': [],
-      'transform': None
-    },
-    2: {
-      'mae_path': '../output/maes/low_censored_dyn/',
-      'dynamic_features': ['ActivityID', 'impact', 'type'],
-      # 'dynamic_features': ['ActivityID','case_length_cat'],
-      'static_features': [],
-      'transform': None
-    },
-    3: {
-      'mae_path': '../output/maes/low_censored_sta/',
-      'dynamic_features': ['ActivityID'],
-      'static_features': ['impact', 'type'],
-      # 'static_features': ['case_length_cat'],
-      'transform': None
-    },
-    4: {
-      'mae_path': '../output/maes/low_censored_trans/',
+      'mae_path': '../output/maes/prc/',
       'dynamic_features': ['ActivityID'],
       'static_features': [],
       'transform': 'log'
     },
-    5: {
-      'mae_path': '../output/maes/low_censored_dyn_trans/',
-      'dynamic_features': ['ActivityID', 'impact', 'type'],
-      # 'dynamic_features': ['ActivityID','case_length_cat'],
-      'static_features': [],
-      'transform': 'log'
-    },
-    6: {
-      'mae_path': '../output/maes/low_censored_sta_trans/',
-      'dynamic_features': ['ActivityID'],
-      'static_features': ['impact', 'type'],
-      # 'static_features': ['case_length_cat'],
-      'transform': 'log'
-    },
+#     2: {
+#       'mae_path': '../output/maes/low_censored_dyn/',
+#       'dynamic_features': ['ActivityID', 'impact', 'type'],
+#       # 'dynamic_features': ['ActivityID','case_length_cat'],
+#       'static_features': [],
+#       'transform': None
+#     },
+#     3: {
+#       'mae_path': '../output/maes/low_censored_sta/',
+#       'dynamic_features': ['ActivityID'],
+#       'static_features': ['impact', 'type'],
+#       # 'static_features': ['case_length_cat'],
+#       'transform': None
+#     },
+#     4: {
+#       'mae_path': '../output/maes/low_censored_trans/',
+#       'dynamic_features': ['ActivityID'],
+#       'static_features': [],
+#       'transform': 'log'
+#     },
+#     5: {
+#       'mae_path': '../output/maes/low_censored_dyn_trans/',
+#       'dynamic_features': ['ActivityID', 'impact', 'type'],
+#       # 'dynamic_features': ['ActivityID','case_length_cat'],
+#       'static_features': [],
+#       'transform': 'log'
+#     },
+#     6: {
+#       'mae_path': '../output/maes/low_censored_sta_trans/',
+#       'dynamic_features': ['ActivityID'],
+#       'static_features': ['impact', 'type'],
+#       # 'static_features': ['case_length_cat'],
+#       'transform': 'log'
+#     },
 }
-
-
-res = 'd'
-extra_censored = 0
-fit_type = 't2e'
-censored = True
-size_dyn = 4
-
 
 def grid_search(dataset, exp):
 
@@ -131,34 +136,30 @@ def grid_search(dataset, exp):
             resolution=res,
             dynamic_features=exp_dict[exp]['dynamic_features'],
             static_features=exp_dict[exp]['static_features'],
-            extra_censored=extra_censored,
             fit_type='t2e',
             transform=exp_dict[exp]['transform'],
             end_event_list=end_event_dict[dataset],
             censored=censored
         )
-        t2e_obj.preprocess()
-        X_train, X_val, X_test, y_train, y_val, y_test =\
-            t2e_obj.split(train_prc=0.7,
-                          val_prc=0.45,
-                          scaling=True)
+        t2e_obj.train_val_test_split()
+        t2e_obj.preprocess(extra_censored=extra_censored)
+        X_train, X_val, X_test, y_train, y_val, y_test = t2e_obj.xy_split()
         try:
-            t2e_obj.build_model(X_train, y_train, X_val, y_val,
-                                size_dyn=8,
-                                size_sta=4)
+            t2e_obj.build_model(X_train, y_train,
+                                size_dyn=8, size_sta=4)
             t2e_obj.fit(X_train, y_train, X_val, y_val,
                         bs=128, exp_dir=dataset+'_'+str(exp)+'_'+str(prefix),
                         vb=False)
         except Exception:
             try:
-                t2e_obj.build_model(X_train, y_train, X_val, y_val,
+                t2e_obj.build_model(X_train, y_train,
                                     size_dyn=8, size_sta=4)
                 t2e_obj.fit(X_train, y_train, X_val, y_val,
                             bs=64,
                             exp_dir=dataset+'_'+str(exp)+'_'+str(prefix),
                             vb=False)
             except Exception:
-                t2e_obj.build_model(X_train, y_train, X_val, y_val,
+                t2e_obj.build_model(X_train, y_train,
                                     size_dyn=8, size_sta=4)
                 t2e_obj.fit(X_train, y_train, X_val, y_val,
                             bs=32,
@@ -176,14 +177,25 @@ def grid_search(dataset, exp):
     return grid_results
 
 
+
+
+dataset = 'a'
+res = 'd'
+extra_censored = 0
+fit_type = 't2e'
+censored = True
+size_dyn = 4
+
+
 def main():
-    dataset = 'e'
+
+
     for exp, v in exp_dict.items():
         mae_path = v['mae_path']
         check_dir(mae_path)
         print('saving  ==> ', mae_path)
         grid_results = grid_search(dataset, exp)
-        pickle.dump(grid_results, open(mae_path + dataset +
+        pickle.dump(grid_results, open(mae_path + dataset + str(extra_censored)+
                     '_GRU.pkl', 'wb'))
 
 

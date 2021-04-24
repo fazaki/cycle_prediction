@@ -6,6 +6,8 @@
 *.swp
 *~
 *requirements.txt*
+*.pickle
+*.pkl
 
 # Unit test / coverage reports
 .coverage

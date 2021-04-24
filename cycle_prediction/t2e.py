@@ -4,6 +4,7 @@ import datetime
 import time
 import logging
 import random
+import itertools
 import tensorflow as tf
 from tensorflow.keras.layers import Dense, GRU, Concatenate  # LSTM
 from tensorflow.keras.layers import BatchNormalization, Lambda, Input
@@ -11,7 +12,7 @@ from tensorflow.keras.optimizers import Nadam  # RMSprop, Adam
 from tensorflow.keras.models import Model
 from cycle_prediction.weibull_utils import weibull_mode, check_dir
 from sklearn.metrics import mean_absolute_error
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
 import wtte.wtte as wtte
 from tensorflow.keras.callbacks import History, CSVLogger, TensorBoard
 from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
@@ -102,7 +103,6 @@ class t2e:
         self.process_id_col = process_id_col
         self.event_type_col = event_type_col
         self.prefix = prefix
-        self.extra_censored = extra_censored
         self.dynamic_features = dynamic_features
         self.static_features = static_features
         self.censored = censored
@@ -116,6 +116,8 @@ class t2e:
         self.resolution = resolution
         self.transform = transform
         self.model = None
+        self.scaling=True
+
         if fit_type == 't2e':
             self.regression = False
         else:
@@ -123,7 +125,53 @@ class t2e:
         self.fit_time = 0
         self.sc = None
 
-    def preprocess(self):
+    def train_val_test_split(self,train_prc=0.7,val_prc=0.45):
+        logger.info('========================================================')
+        logger.info("Prefix = %d", self.prefix)
+        # Store all cases length
+        logger.info('Total cases: %d', self.dataset[self.process_id_col]
+                    .nunique())
+        # Safe condiftions
+        if self.end_event_list == []:
+            raise ValueError(
+                "end_event_list should not be empty"
+                )
+        # Set datatime column
+        self.dataset.CompleteTimestamp = pd.to_datetime(
+            self.dataset.CompleteTimestamp)
+        self.dataset.sort_values(
+            [self.process_id_col, "CompleteTimestamp"], ascending=True)
+
+        # Retrieve all sequences with their records count
+        # Only keep sequences that has at least prefix + 1 records
+        case_counts = self.dataset.groupby([self.process_id_col]).count()
+        below_prefix = list(
+            case_counts.loc[case_counts[self.event_type_col]
+                            <= self.prefix].index)
+        self.dataset = self.dataset.loc[~self.dataset[self.process_id_col]
+                                        .isin(below_prefix)]\
+            .reset_index(drop=True)
+
+        self.all_cases = self.dataset[self.process_id_col].unique().tolist()
+        logger.info('Prefix cases: %d', len(self.all_cases))
+
+
+        len_train = int(train_prc * len(self.all_cases))
+        len_val = int(len_train*val_prc)
+        cases_train = self.all_cases[0:len_train]
+        cases_val = [cases_train.pop() for i in range(len_val)]
+        cases_test = self.all_cases[len_train:]
+
+        self.train = self.dataset.loc[self.dataset[self.process_id_col].isin(
+            cases_train)].reset_index(drop=True)
+        self.val = self.dataset.loc[self.dataset[self.process_id_col].isin(
+            cases_val)].reset_index(drop=True)
+        self.test = self.dataset.loc[self.dataset[self.process_id_col].isin(
+            cases_test)].reset_index(drop=True)
+        logger.info('========================')
+
+
+    def preprocess(self, extra_censored = 0):
         """a method responsible for:
             1. Removing traces longer than the desired prefix.
             2. Creating dynamic and static featires as per the initialization
@@ -167,33 +215,8 @@ class t2e:
             |                    |           | hours or days                 |
             +--------------------+-----------+-------------------------------+
         """
-        # Safe condiftions
-        logger.info('========================================================')
-        if self.end_event_list == []:
-            raise ValueError(
-                "end_event_list should not be empty"
-            )
-        logger.info("Prefix = %d", self.prefix)
-        # Set datatime colum
-        self.dataset.CompleteTimestamp = pd.to_datetime(
-            self.dataset.CompleteTimestamp)
-        self.dataset.sort_values(
-            [self.process_id_col, "CompleteTimestamp"], ascending=True)
-        logger.info('Total    cases: %d', self.dataset[self.process_id_col]
-                    .nunique())
-        # Retrieve all sequences with their records count
-        # Only keep sequences that has at least prefix + 1 records
-        case_counts = self.dataset.groupby([self.process_id_col]).count()
-        below_prefix = list(
-            case_counts.loc[case_counts[self.event_type_col]
-                            <= self.prefix].index)
-        self.dataset = self.dataset.loc[~self.dataset[self.process_id_col]
-                                        .isin(below_prefix)]\
-            .reset_index(drop=True)
-
-        # Store all cases length
-        self.all_cases = self.dataset[self.process_id_col].unique()
-        logger.info('Prefix   cases: %d', len(self.all_cases))
+        # reduced dataset based on prefix
+        self.dataset = pd.concat([self.train, self.val, self.test], axis=0).reset_index(drop=True)
 
         # Create censorship dictionary based on end_event_list
         self.cen_dict = self.dataset.drop_duplicates(
@@ -208,121 +231,144 @@ class t2e:
                 self.cen_dict[k] = 0
         observed_cases = [k for k, v in self.cen_dict.items() if v == 1]
         random.shuffle(observed_cases)
-        # Add extra censored cases
-        i = 0
-        for case in observed_cases:
-            if i < self.extra_censored:
-                tmp_df = self.dataset\
-                             .loc[self.dataset[self.process_id_col] == case]
-                if len(tmp_df) >= self.prefix + 2:
-                    i += 1
-                    last_index = tmp_df.index[-1]
-                    # possible trims
-                    x = np.arange(1, len(tmp_df) - self.prefix)
-                    random_censor = np.random.choice(x, 1, replace=False)[0]
-                    drop_idx = []
-                    for j in range(random_censor):
-                        drop_idx.append(last_index - j)
-                    self.dataset[self.process_id_col] =\
-                        self.dataset[self.process_id_col]\
-                            .drop(drop_idx, axis=0)
-                    self.cen_dict[case] = 0
-                else:
-                    continue
-            else:
-                break
 
-        # Assign the censorship state
-        self.dataset[self.process_id_col].reset_index(drop=True, inplace=True)
-        self.dataset['U'] = self.dataset[self.process_id_col]\
-                                .map(self.cen_dict)
-        self.censored_cases = [k for k, v in self.cen_dict.items()
-                               if int(v) == 0]
-        self.observed_cases = [k for k, v in self.cen_dict.items()
-                               if int(v) == 1]
-        logger.info("Censored cases: %d", len(self.censored_cases))
-        logger.info("Observed cases: %d", len(self.observed_cases))
-        # process time features
-        self.dataset = self.dataset.groupby(self.process_id_col).apply(
-                        lambda case: self.__time_features(case))
-        self.dataset.fvt1.fillna(0, inplace=True)
-        if self.transform == 'log':
-            logger.info('Y_label has been transformed to logarithmic scale')
-            self.dataset['D2E'] = np.log(self.dataset['D2E'] + 1)
-        elif self.transform == 'power':
-            logger.info('Y_label has been transformed with (1/3) root')
-            self.dataset['D2E'] = self.dataset['D2E']**3
+        for data_idx, df in enumerate([self.train, self.val, self.test])    :
+            
+            if (data_idx == 0) and (extra_censored > 0):
+                # Add extra censored cases
+                i = 0
+                # extra_censored = 
+                for case in observed_cases:
+                    if i < extra_censored:
+                        tmp_df = df.loc[df[self.process_id_col] == case]
+                        if len(tmp_df) >= self.prefix + 2:
+                            i += 1
+                            last_index = tmp_df.index[-1]
+                            # possible trims
+                            x = np.arange(1, len(tmp_df) - self.prefix)
+                            random_censor = np.random.choice(x, 1, replace=False)[0]
+                            drop_idx = []
+                            for j in range(random_censor):
+                                drop_idx.append(last_index - j)
+                            df[self.process_id_col] =\
+                                df[self.process_id_col]\
+                                    .drop(drop_idx, axis=0)
+                            self.cen_dict[case] = 0
+                        else:
+                            continue
+                    else:
+                        break
 
-        # process categorical features
-        for cf in self.dynamic_features + self.static_features:
-            dummy = pd.get_dummies(self.dataset[cf],
-                                   prefix=cf,
-                                   drop_first=True)
-            self.dataset = pd.concat([self.dataset, dummy], axis=1)
-        # Remove last step
-        last_step = self.dataset.drop_duplicates(
-            subset=[self.process_id_col], keep='last')[self.event_type_col]\
-            .index
-        self.dataset = self.dataset.drop(
-            last_step, axis=0).reset_index(drop=True)
-        # drop useless columns
-        self.dataset = self.dataset.drop(
-            ['CompleteTimestamp', 'T2E'], axis=1)
-        # end_list_cols = [self.event_type_col + '_' + x
-        #                  for x in self.end_event_list]
-        # self.dataset = self.dataset.drop(
-        #     end_list_cols, axis=1, errors='ignore')
+            # Assign the censorship state
+            df[self.process_id_col].reset_index(drop=True, inplace=True)
+            df['U'] = df[self.process_id_col]\
+                                    .map(self.cen_dict)
+            self.censored_cases = [k for k, v in self.cen_dict.items()
+                                if int(v) == 0]
+            self.observed_cases = [k for k, v in self.cen_dict.items()
+                                if int(v) == 1]
 
-        # define dynamic/static features columns IDs
-        dyn_features_idx = np.where(self.dataset.columns.str
-                                        .contains('fvt'))[0]
-        sta_features_idx = np.array([])
+            if data_idx == 0:
+                logger.info("TRAINING SET")
+                logger.info("Censored cases: %d", df.loc[df['U']==0][self.process_id_col].nunique())
+            elif data_idx == 1:
+                logger.info("VALIDATION SET")
+            elif data_idx == 2:
+                logger.info("TEST SET")
+            logger.info("Observed cases: %d", df.loc[df['U']==1][self.process_id_col].nunique())
 
-        for i in range(len(self.dynamic_features)):
-            dyn_features_idx = np.concatenate(
-                (dyn_features_idx,
-                 [np.where(self.dataset.columns.str.contains(str(x) + '_'))
-                  for x in self.dynamic_features][i][0]), axis=0)
+            # process time features
+            df = df.groupby(self.process_id_col).apply(
+                            lambda case: self.__time_features(case))
+            df.fvt1.fillna(0, inplace=True)
+            if self.transform == 'log':
+                logger.info('Y_label has been transformed to logarithmic scale')
+                df['D2E'] = np.log(df['D2E'] + 1)
+            elif self.transform == 'power':
+                logger.info('Y_label has been transformed with (1/3) root')
+                df['D2E'] = df['D2E']**3
+            logger.info('========================')
 
-        for i in range(len(self.static_features)):
-            sta_features_idx = np.concatenate(
-                (sta_features_idx,
-                 [np.where(self.dataset.columns.str.contains(str(x) + '_'))
-                  for x in self.static_features][i][0]), axis=0)
+            if data_idx == 0:
+                ohe = OneHotEncoder(categories='auto', handle_unknown='ignore')
+                cf = self.dynamic_features + self.static_features
+                ohe.fit(df[cf])
+                feature_labels = np.array(ohe.categories_)
+                colnames = []
+                for i, (fname, numbers) in enumerate(zip(cf,feature_labels)):
+                    colnames.append([fname+'_'+str(j) for j in numbers])
+                    colnames = list(itertools.chain(*colnames))
+            feature_arr = ohe.transform(df[cf]).toarray()
+            feature_arr = pd.DataFrame(feature_arr, columns=colnames)
+            df = pd.concat([df, feature_arr], axis=1)
 
-        self.dyn_features_idx = sorted(dyn_features_idx)
-        self.sta_features_idx = sorted(sta_features_idx)
-        self.sta_features_idx = [int(x) for x in self.sta_features_idx]
+            # Remove last step
+            last_step = df.drop_duplicates(
+                subset=[self.process_id_col], keep='last')[self.event_type_col]\
+                .index
+            df = df.drop(
+                last_step, axis=0).reset_index(drop=True)
+            # drop useless columns
+            df = df.drop(
+                ['CompleteTimestamp', 'T2E'], axis=1)
+
+            dyn_features_idx = np.where(df.columns.str
+                                            .contains('fvt'))[0]
+            sta_features_idx = np.array([])
+
+            for i in range(len(self.dynamic_features)):
+                dyn_features_idx = np.concatenate(
+                    (dyn_features_idx,
+                    [np.where(df.columns.str.contains(str(x) + '_'))
+                    for x in self.dynamic_features][i][0]), axis=0)
+
+            for i in range(len(self.static_features)):
+                sta_features_idx = np.concatenate(
+                    (sta_features_idx,
+                    [np.where(df.columns.str.contains(str(x) + '_'))
+                    for x in self.static_features][i][0]), axis=0)
+
+            self.dyn_features_idx = sorted(dyn_features_idx)
+            self.sta_features_idx = sorted(sta_features_idx)
+            self.sta_features_idx = [int(x) for x in self.sta_features_idx]
+            if data_idx == 0:
+                self.train = df.copy()
+            elif data_idx == 1:
+                self.val = df.copy()
+            elif data_idx == 2:
+                self.test = df.copy()
+
         logger.info("Dynamic Features Idx: %s", self.dyn_features_idx)
         logger.info("Static  Features Idx: %s", self.sta_features_idx)
 
-    def xy_split(self, scaling):
-        """Spliting the dataset into X_test [and y_test if available].
 
-        Used when testing new traces
+    # def xy_split(self, scaling):
+    #     """Spliting the dataset into X_test [and y_test if available].
 
-        Args:
-            scaling (bool): To scale numerical feature.
-            scaling_obj: fit object to scale the features.
+    #     Used when testing new traces
 
-        Returns:
+    #     Args:
+    #         scaling (bool): To scale numerical feature.
+    #         scaling_obj: fit object to scale the features.
 
-            X_test (arr): tensor of shape [n_examples, prefix, n_features]
-            y_test (arr): tensor of shape [n_examples, 2]
-        """
-        df_test = self.dataset
-        if scaling:
-            if self.sc is None:
-                raise ValueError('scaling attribute is set to TRUE,\
-                    while self.sc == None')
-            df_test.loc[:, ["fvt1", "fvt2", "fvt3"]] = self.sc.transform(
-                df_test[["fvt1", "fvt2", "fvt3"]])
+    #     Returns:
 
-        X_test, y_test = self.__xy_split(df_test)
+    #         X_test (arr): tensor of shape [n_examples, prefix, n_features]
+    #         y_test (arr): tensor of shape [n_examples, 2]
+    #     """
+    #     df_test = self.dataset
+    #     if scaling:
+    #         if self.sc is None:
+    #             raise ValueError('scaling attribute is set to TRUE,\
+    #                 while self.sc == None')
+    #         df_test.loc[:, ["fvt1", "fvt2", "fvt3"]] = self.sc.transform(
+    #             df_test[["fvt1", "fvt2", "fvt3"]])
 
-        return X_test, y_test
+    #     X_test, y_test = self.__xy_split(df_test)
 
-    def split(self, train_prc, val_prc, scaling):
+    #     return X_test, y_test
+
+    def xy_split(self):
         """Spliting the dataset to train, validation and test sets.
 
         The data nature requires a special function for this purpose
@@ -345,38 +391,38 @@ class t2e:
 
             y_test (object): tensor of shape [n_examples, 2]
         """
-        len_train = int(train_prc * len(self.observed_cases))
-        len_val = int(len_train*val_prc)
-        cases_train = self.observed_cases[0:len_train]
-        cases_val = [cases_train.pop() for i in range(len_val)]
-        cases_test = self.observed_cases[len_train:]
+        # len_train = int(train_prc * len(self.observed_cases))
+        # len_val = int(len_train*val_prc)
+        # cases_train = self.observed_cases[0:len_train]
+        # cases_val = [cases_train.pop() for i in range(len_val)]
+        # cases_test = self.observed_cases[len_train:]
 
-        if self.censored:
-            cases_train = cases_train + self.censored_cases
+        # if self.censored:
+        #     cases_train = cases_train + self.censored_cases
 
-        logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train),
-                    len_train-len_val, len(self.censored_cases))
-        logger.info("Validation : %d", len(cases_val))
-        logger.info("Testing    : %d", len(cases_test))
-        df_train = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_train)].reset_index(drop=True)
-        df_val = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_val)].reset_index(drop=True)
-        df_test = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_test)].reset_index(drop=True)
-        if scaling:
+        # logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train),
+        #             len_train-len_val, len(self.censored_cases))
+        # logger.info("Validation : %d", len(cases_val))
+        # logger.info("Testing    : %d", len(cases_test))
+        # df_train = self.dataset.loc[self.dataset[self.process_id_col].isin(
+        #     cases_train)].reset_index(drop=True)
+        # df_val = self.dataset.loc[self.dataset[self.process_id_col].isin(
+        #     cases_val)].reset_index(drop=True)
+        # df_test = self.dataset.loc[self.dataset[self.process_id_col].isin(
+        #     cases_test)].reset_index(drop=True)
+        if self.scaling:
             sc = StandardScaler()
-            df_train.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(
-                df_train[["fvt1", "fvt2", "fvt3"]])
-            df_val.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.transform(
-                df_val[["fvt1", "fvt2", "fvt3"]])
-            df_test.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.transform(
-                df_test[["fvt1", "fvt2", "fvt3"]])
+            self.train.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(
+                self.train[["fvt1", "fvt2", "fvt3"]])
+            self.val.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.transform(
+                self.val[["fvt1", "fvt2", "fvt3"]])
+            self.test.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.transform(
+                self.test[["fvt1", "fvt2", "fvt3"]])
             self.sc = sc
 
-        X_train,  y_train = self.__xy_split(df_train)
-        X_val, y_val = self.__xy_split(df_val)
-        X_test, y_test = self.__xy_split(df_test)
+        X_train, y_train = self.__xy_split(self.train)
+        X_val,   y_val   = self.__xy_split(self.val)
+        X_test,  y_test  = self.__xy_split(self.test)
         # X_train = np.float64(X_train)
         # y_train = np.float64(y_train)
         # X_val = np.float64(X_val)
@@ -743,7 +789,7 @@ class t2e:
         x_dyn = []
         x_sta = []
         if len(df) < self.prefix:
-            logger.info("this should NOT happen !!")
+            logger.error("this should NOT happen !!")
             x_dyn.append(np.concatenate(
                 (np.full((self.prefix - df.shape[0],
                           len(self.dyn_features_idx)),
@@ -788,7 +834,8 @@ class t2e:
             y.append(df.values[self.prefix-1, time_idx])
 
         # y.append(df.loc[0, "U"])
-        y.append(self.cen_dict[df[self.process_id_col].unique()[0]])
+        case_nb = df[self.process_id_col].unique()[0]
+        y.append(self.cen_dict[case_nb])
         y = np.hstack(np.array(y)).flatten()
         y.reshape((1, 2))
         return y
