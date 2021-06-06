@@ -4,6 +4,7 @@ import os
 from cycle_prediction.t2e import t2e
 from cycle_prediction.weibull_utils import check_dir
 import pandas as pd
+import numpy as np
 import pickle
 import warnings
 warnings.filterwarnings("ignore")
@@ -126,7 +127,7 @@ exp_dict = {
 #     },
 }
 
-def grid_search(dataset, exp):
+def grid_search(dataset, exp, extra_censored):
 
     grid_results = pd.DataFrame(columns=cols)
     for prefix in range_dict[dataset]:
@@ -179,24 +180,25 @@ def grid_search(dataset, exp):
 
 
 
-dataset = 'a'
+dataset = 'd'
 res = 'd'
-extra_censored = 0
 fit_type = 't2e'
 censored = True
 size_dyn = 4
 
 
 def main():
-
-
-    for exp, v in exp_dict.items():
-        mae_path = v['mae_path']
-        check_dir(mae_path)
-        print('saving  ==> ', mae_path)
-        grid_results = grid_search(dataset, exp)
-        pickle.dump(grid_results, open(mae_path + dataset + str(extra_censored)+
-                    '_GRU.pkl', 'wb'))
+    
+    for extra_censored in np.arange (0, 1.1, 0.1):
+        print(extra_censored)
+        for exp, v in exp_dict.items():
+            mae_path = v['mae_path']
+            check_dir(mae_path + dataset + '/')
+            # print('saving  ==> ', mae_path)
+            grid_results = grid_search(dataset, exp, extra_censored)
+            pickle.dump(grid_results, open(mae_path + 
+                        dataset + '/' + str(extra_censored)+
+                        '_GRU.pkl', 'wb'))
 
 
 if __name__ == "__main__":

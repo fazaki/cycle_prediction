@@ -158,16 +158,16 @@ class t2e:
 
         len_train = int(train_prc * len(self.all_cases))
         len_val = int(len_train*val_prc)
-        cases_train = self.all_cases[0:len_train]
-        cases_val = [cases_train.pop() for i in range(len_val)]
-        cases_test = self.all_cases[len_train:]
+        self.cases_train = self.all_cases[0:len_train]
+        self.cases_val = [self.cases_train.pop() for i in range(len_val)]
+        self.cases_test = self.all_cases[len_train:]
 
         self.train = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_train)].reset_index(drop=True)
+            self.cases_train)].reset_index(drop=True)
         self.val = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_val)].reset_index(drop=True)
+            self.cases_val)].reset_index(drop=True)
         self.test = self.dataset.loc[self.dataset[self.process_id_col].isin(
-            cases_test)].reset_index(drop=True)
+            self.cases_test)].reset_index(drop=True)
         logger.info('========================')
 
 
@@ -232,12 +232,15 @@ class t2e:
         observed_cases = [k for k, v in self.cen_dict.items() if v == 1]
         random.shuffle(observed_cases)
 
-        for data_idx, df in enumerate([self.train, self.val, self.test])    :
+        for data_idx, df in enumerate([self.train, self.val, self.test]):
             
             if (data_idx == 0) and (extra_censored > 0):
                 # Add extra censored cases
                 i = 0
-                # extra_censored = 
+                logger.info('Extra censored percentage %s', str(extra_censored))
+                logger.info('len(df) %s', str(len(self.cases_train)))
+                extra_censored = int(extra_censored*len(self.cases_train))
+                logger.info('Extra censored examples %s', str(extra_censored))
                 for case in observed_cases:
                     if i < extra_censored:
                         tmp_df = df.loc[df[self.process_id_col] == case]
@@ -393,23 +396,23 @@ class t2e:
         """
         # len_train = int(train_prc * len(self.observed_cases))
         # len_val = int(len_train*val_prc)
-        # cases_train = self.observed_cases[0:len_train]
-        # cases_val = [cases_train.pop() for i in range(len_val)]
-        # cases_test = self.observed_cases[len_train:]
+        # self.cases_train = self.observed_cases[0:len_train]
+        # self.cases_val = [self.cases_train.pop() for i in range(len_val)]
+        # self.cases_test = self.observed_cases[len_train:]
 
         # if self.censored:
-        #     cases_train = cases_train + self.censored_cases
+        #     self.cases_train = self.cases_train + self.censored_cases
 
-        # logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(cases_train),
+        # logger.info("Training   : %d \t (Obs:%d, Cen:%d)", len(self.cases_train),
         #             len_train-len_val, len(self.censored_cases))
-        # logger.info("Validation : %d", len(cases_val))
-        # logger.info("Testing    : %d", len(cases_test))
+        # logger.info("Validation : %d", len(self.cases_val))
+        # logger.info("Testing    : %d", len(self.cases_test))
         # df_train = self.dataset.loc[self.dataset[self.process_id_col].isin(
-        #     cases_train)].reset_index(drop=True)
+        #     self.cases_train)].reset_index(drop=True)
         # df_val = self.dataset.loc[self.dataset[self.process_id_col].isin(
-        #     cases_val)].reset_index(drop=True)
+        #     self.self.cases_val)].reset_index(drop=True)
         # df_test = self.dataset.loc[self.dataset[self.process_id_col].isin(
-        #     cases_test)].reset_index(drop=True)
+        #     self.self.cases_test)].reset_index(drop=True)
         if self.scaling:
             sc = StandardScaler()
             self.train.loc[:, ["fvt1", "fvt2", "fvt3"]] = sc.fit_transform(

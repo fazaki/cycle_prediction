@@ -35,3 +35,5 @@ tensorboard
 *Exploring*
 *dev*
 *logs*
+.DS_Store
+.idea
