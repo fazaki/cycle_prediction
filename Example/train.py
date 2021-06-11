@@ -66,10 +66,10 @@ range_dict = {
 }
 
 end_event_dict = {
-    'a': [1,2,3,4,5,6],
-    'b': [1,2,3,4,5,6],
-    'c': [1,2,3,4,5,6],
-    'd': [1,2,3,4,5,6],
+    'a': df_dict['a'].drop_duplicates(subset=['CaseID','ActivityID'], keep='last')['ActivityID'].unique().tolist(),
+    'b': df_dict['b'].drop_duplicates(subset=['CaseID','ActivityID'], keep='last')['ActivityID'].unique().tolist(),
+    'c': df_dict['c'].drop_duplicates(subset=['CaseID','ActivityID'], keep='last')['ActivityID'].unique().tolist(),
+    'd': df_dict['d'].drop_duplicates(subset=['CaseID','ActivityID'], keep='last')['ActivityID'].unique().tolist(),
     'e': ['Completed+Closed', 'Completed+In Call', 'Completed-Closed',
           'Completed+Resolved', 'Completed+Cancelled', 'Completed-Cancelled'],
     'f': ['Release A', 'Release B', 'Release C', 'Release D', 'Release E',
@@ -189,7 +189,7 @@ size_dyn = 4
 
 def main():
     
-    for extra_censored in np.arange (0, 1.1, 0.1):
+    for extra_censored in np.arange (1.0, 1.1, 0.1):
         print(extra_censored)
         for exp, v in exp_dict.items():
             mae_path = v['mae_path']
