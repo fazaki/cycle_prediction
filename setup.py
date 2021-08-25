@@ -16,7 +16,7 @@ setuptools.setup(
     url="https://github.com/fazaki/cycle_prediction/tree/master",
     packages=setuptools.find_packages(),
     install_requires=[
-        'tensorflow==2.0.1',
+        'tensorflow==2.5.1',
         'Keras==2.3.1',
         'Keras-Applications==1.0.8',
         'Keras-Preprocessing==1.1.0',
