@@ -74,7 +74,7 @@ Linux:
 
 
 # Theory
-- Paper publication in progress
+- Paper publication: https://link.springer.com/chapter/10.1007%2F978-3-030-72693-5_8
 
 
 # References
